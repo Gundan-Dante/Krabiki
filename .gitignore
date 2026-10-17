@@ -1,2 +1,21 @@
 eeg-mind-reading-challenge
+*.zip
 .venv
+
+# generated, large: never commit
+features/
+frames/
+audio/
+*.mp4
+*.wav
+
+# python / jupyter
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.egg-info/
+
+# experiment outputs: keep locally, commit only the canonical submission
+results/similarity/
+submissions/*
+!submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/
