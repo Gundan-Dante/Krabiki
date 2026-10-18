@@ -516,3 +516,28 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   --frames 16`), then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member
   decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:clap_all:1
   --member decw:lowav_all:1 --max-seconds 1.5 --csls 5 --csls-stage member --experiment final_super_csls5`.
+
+## M22: Everything combined = AlexNet v2 (track-alexnet) + CLAP + low-level AV (track-audio, after merging track-alexnet)
+- **What:** `scripts/ensemble.py` (no change), 8 members: decw clip_b32, dinov2_b_patch_all, vjepa2_l_all f16, con clip_b32
+  two_tower_d256 (3 seeds), decw clip_b32_mid8_all f8, decw alexnet_p6 f8 (krabiki-51's v2 member, built here with
+  `extract_features.py --model alexnet --frames 8` + `lowlevel_features.py alexnet-pool --pool 6`), decw clap_all f1,
+  decw lowav_all f1 (M20). N > 5, so steepest-ascent pair transfers. CV tables `results/merged_*_cv.csv`.
+- **Result** (dev mean over sub-01..04):
+
+  | Ensemble | settings | CV weights (dino / vjepa / con / alex / clap / lowav; clip and block-8 0.0) | LOFO | top-1 / top-5 / median |
+  |---|---|---|---|---|
+  | v2 (ALEXNET_FINDINGS.md), reproduced exactly | center-test, CSLS 5 member | 0.3 / 0.2 / 0.2 / 0.3 / - / - | 0.236 | 29.4 / 63.0 / 3.5 |
+  | **v2 + clap + lowav** | **center-test, CSLS 5 member** | **0.2 / 0.2 / 0.1 / 0.2 / 0.1 / 0.2** (per-subject chosen) | **0.264** | **33.1 / 67.9 / 2.9** |
+  | v2 + clap + lowav (backup) | none | 0.2 / 0.1 / 0.2 / 0.2 / 0.1 / 0.2 | 0.246 | 26.2 / 57.6 / 4.0 |
+
+  Paired Wilcoxon on 408 dev trial ranks, combined vs v2: **183 better / 90 worse, p = 5e-7**. Per-subject top-1:
+  40.2 / 36.3 / 25.5 / 30.4 (v2: 33.3 / 36.3 / 20.6 / 27.5). Spatial (AlexNet) and temporal / audio (lowav, clap) low-level
+  members are complementary: both keep weight.
+- **Submissions** (local, gitignored, validated 102 x 102 int64 permutations): `submissions/merged_all_ctr_csls5_cv/`
+  (headline candidate) and `submissions/merged_all_plain_cv/` (backup).
+- **Before adopting:** same AUDIT.md checks as final_csls (independent rescore, label-shuffle / row-permutation controls;
+  M20 already has shuffled-pair controls for clap and lowav).
+- **Reproduce:** features as in M20 / M21 / track-alexnet, then `PYTHONPATH=src:scripts python scripts/ensemble.py
+  --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256
+  --member decw:clip_b32_mid8_all:8 --member decw:alexnet_p6:8 --member decw:clap_all:1 --member decw:lowav_all:1
+  --max-seconds 1.5 --center-test --csls 5 --csls-stage member --experiment merged_all_ctr_csls5`.
