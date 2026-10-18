@@ -433,3 +433,9 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   +0.25 0.199, +0.5 0.165). β=0 is picked on 6/6 subjects (pct rank) and 5/6 ((E1+E5)/2). Column-z alone is worse by CV (0.2099 vs
   0.2123); its dev diagnostic is n.s. (24.8 / 58.6, p = 0.26). **Not adopted.** The CV member weights and the low-level members
   already capture the image / video / motion balance.
+- **Premise check (krabiki-2f, 5,650 held-out training-CV trials, 6 subjects, terciles of the true video's motion):** every
+  member and the blend decode **moving videos worse** (blend pct rank 0.179 static / 0.178 medium / 0.201 moving). V-JEPA's
+  advantage over the image members is **largest on static** videos (−0.026) and shrinks with motion (−0.008). Moving − static =
+  +0.018, 95% CI [+0.006, +0.031], only 1/6 subjects with the predicted sign. The premise ("video models win on moving
+  videos") is contradicted in our data, so the idea is doomed here, not just the gate design. Likely reason: the 50–600 ms
+  EEG window reflects the clip's opening scene, while features pooled over 3 s blur more for moving clips.
