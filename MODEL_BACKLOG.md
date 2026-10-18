@@ -485,6 +485,110 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 - **Seed robustness (con seeds 3-5, exhaustive search):** the weights move by at most one 0.1 transfer (4 members 0.0/0.3/0.4/0.3 -> 0.0/0.4/0.3/0.3; 5 members plain 0.0/0.4/0.3/0.2/0.1 -> 0.0/0.3/0.3/0.3/0.1; the headline set keeps exactly 0.0/0.4/0.3/0.2/0.1, dev 25.5 / 55.9 / 4.0 vs 24.0 / 57.1 / 4.2, p = 0.37).
 - **Caveats:** alphas are chosen on the full training set (not nested); the CSLS in the CV is applied to each held-out fold (~200 recordings) while the test set has 102; dev (4 x 102 trials) was never used for selection.
 
+## M20: Audio (CLAP) and time-resolved low-level audio-visual decoders (track-audio, Alikhan's laptop, RTX 3050 4 GB)
+- **Code/data:** `src/eegmr/audio.py`, `scripts/extract_audio.py` (new; `features.py` untouched). PyAV `av==18.1.0` decodes the
+  mp4 audio (no system ffmpeg). Caches: `features/clap_all_f1.npz` (LAION-CLAP `laion/clap-htsat-unfused`, revision
+  `8fa0f1c6d0433df6e97c127f64b2a1d6c0dcda8a`, Apache-2.0, 2023; 512-d whole-clip `mean` + three 1 s segments in `frames`),
+  `features/low{vis,aud,av}_all_f1.npz` (no model: per 100 ms bin luminance / contrast / Sobel edges / motion, and RMS /
+  onset strength / 8 log10-mel bands; 30 bins x 4 / 10 / 14, flattened in `mean`). 43 clips have no usable audio (no stream
+  or RMS < 1e-4; 3 test videos: 1015, 1043, 1102): CLAP gives them the mean audible-training embedding, low-level audio
+  gives 0 loudness / onset and the log-power floor. **Rules check (2026-10-18): passed.** Apache-2.0, released 2023. The HF card names only
+  LAION-Audio-630K, whose 8 sources are all audio libraries (Freesound, Epidemic Sound, Audiostock, BBC Sound Effects,
+  Free To Use Sounds, Sonniss, Paramount Motion, We Sound Effects; github.com/LAION-AI/audio-dataset): no video dataset,
+  no Moments in Time. Which original checkpoint the HF conversion used (630k-best vs 630k-audioset-best) is not documented,
+  so worst case it also saw AudioSet (Google, 10 s YouTube segments with sound-event labels), which is not built on Moments
+  in Time either. Residual risk: incidental overlap of YouTube source videos, the same kind as for CLIP (LAION-2B) and
+  V-JEPA 2 (YT-Temporal-1B), which the team already accepted.
+- **Reproduction check on this machine:** decw clip_b32 f8 gives exactly the reference 14.7 / 42.2 (CV 0.1923 / 0.2058 /
+  0.2507 / 0.2190 / 0.2465 / 0.2769); with CSLS k=5 17.4 / 49.3. Test suite: 37 passed.
+- **Single decoders** (decw, 1.5 s crop, retrieval alpha; mean train-CV over 6 subjects, dev mean over sub-01..04):
+
+  | Features | window | mean CV | dev top-1 / top-5 / median rank |
+  |---|---|---|---|
+  | clap_all | 0-300 ms | 0.343 | 4.4 / 18.4 / 19.1 |
+  | **clap_all** | **50-600 ms** (CV-best on 6/6 subjects) | **0.328** | **5.4 / 20.3 / 20.0** |
+  | clap_all | 0-1.5 s | 0.342 | 2.7 / 18.6 / 18.9 |
+  | clap_all | 0-3 s (3 s crop) | 0.357 | 3.4 / 15.7 / 20.1 |
+  | lowvis_all | 50-600 ms | 0.328 | 4.4 / 18.6 / 21.1 |
+  | lowvis_all | 0-3 s | 0.352 | 5.1 / 18.9 / 21.1 |
+  | **lowav_all** | **50-600 ms** | **0.275** | **4.9 / 22.3 / 17.2** |
+  | lowav_all | 0-3 s | 0.298 | 7.4 / 22.8 / 16.0 (dev better, CV worse: CV rules) |
+
+  `lowaud_all` alone can't go through `predict.py`: the 3 silent test videos have identical features, so tied scores trip
+  the file-vs-memory assert. Its CV comes from the ensemble tool (0.334-0.351 per subject).
+- **Diversity:** RSA (Spearman of video x video cosine, training-standardized) CLAP vs CLIP B-32 = 0.181 (0.188 on audible
+  clips only), far below V-JEPA's 0.48-0.50.
+- **Ensembles** (`scripts/ensemble.py`, CV weights, `--max-seconds 1.5`):
+
+  | Members | CV weights | LOFO | dev top-1 / top-5 / med | vs decw clip (paired Wilcoxon) |
+  |---|---|---|---|---|
+  | clip + clap | per subject, mostly 0.8 / 0.2 | 0.155 -> 0.167 | 16.7 / 43.9 / 7.1 | 185 / 128, p = 0.0016 |
+  | clip + clap, CSLS 5 member | global 0.8 / 0.2 | 0.163 -> 0.174 | 20.1 / 51.0 / 5.2 | 179 / 120, p = 0.0018 |
+  | **clip + clap + lowav** | **global 0.5 / 0.1 / 0.4** | 0.155 -> **0.202** | **19.6 / 49.5 / 6.1** | 243 / 102, p = 2e-12 |
+  | **clip + clap + lowav, CSLS 5 member** | **global 0.5 / 0.1 / 0.4** | 0.163 -> **0.217** | **25.0 / 56.1 / 4.4** | 239 / 86, p = 1e-13 |
+
+  CV-only, 4 members (clip / clap / lowaud / lowvis): weights 0.4 / 0.1 / 0.2 / 0.3, LOFO 0.199: both the audio half and
+  the visual half of the low-level features get weight.
+- **Controls:** decoders trained on shuffled training pairs (training rows of the feature cache permuted, seed 0; test rows
+  unchanged): lowav 1.2 / 4.2 / 55.2, CLAP 0.5 / 3.9 / 47.5, CV 0.48-0.51, i.e. chance (`results/controls.csv`).
+- **Status:** adopted; M17 + clap + lowav tested in M21 (the gain survives). CLAP rules check passed (above).
+- **Reproduce:** `PYTHONPATH=src python scripts/extract_audio.py --model clap && python scripts/extract_audio.py --model
+  lowlevel`, then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:clap_all:1
+  --member decw:lowav_all:1 --max-seconds 1.5 [--csls 5 --csls-stage member] --experiment audio_ens3_csls{0,5}`.
+
+## M21: Super ensemble = M17 + CLAP + low-level AV (track-audio): new best
+- **What:** `scripts/ensemble.py` (no change) with the M17 members (decw clip_b32 f8, decw dinov2_b_patch_all f8, decw
+  vjepa2_l_all f16, con clip_b32 two_tower_d256, 3 seeds) plus the M20 members decw clap_all f1 and decw lowav_all f1.
+  6 members, so weights come from the steepest-ascent pair transfers (N > 5). All features re-extracted on this machine
+  (DINOv2 all frames 28 min, V-JEPA 3.5 min, RTX 3050). CV tables `results/final_{m17,super}_csls{0,5}_cv.csv`.
+- **M17 reproduced on this machine** (same folds): CV now picks 0.0 / 0.3 / 0.4 / 0.3 (the exhaustive-search optimum noted
+  under krabiki-51), dev 20.1 / 50.2 / 5.5; with CSLS 5 per member 0.1 / 0.4 / 0.3 / 0.2, dev 24.5 / 56.6 / 4.4 (= reported).
+- **Result:**
+
+  | Ensemble | CV weights (clip / patch / vjepa / con / clap / lowav) | LOFO | dev top-1 / top-5 / median |
+  |---|---|---|---|
+  | M17 | 0.0 / 0.3 / 0.4 / 0.3 | 0.193 | 20.1 / 50.2 / 5.5 |
+  | **M17 + clap + lowav** | global 0.0 / 0.2 / 0.2 / 0.2 / 0.1 / 0.3 | **0.234** | **25.0 / 55.6 / 4.8** |
+  | M17, CSLS 5 member | 0.1 / 0.4 / 0.3 / 0.2 | 0.208 | 24.5 / 56.6 / 4.4 |
+  | **M17 + clap + lowav, CSLS 5 member** | per subject (global 0.1 / 0.2 / 0.2 / 0.1 / 0.1 / 0.3) | **0.248** | **29.4 / 64.5 / 3.2** |
+
+  Paired Wilcoxon on the 408 dev trial ranks, super vs M17: no CSLS 207 better / 106 worse, **p = 4e-9**; CSLS **207 / 80,
+  p = 5e-13**. Per-subject dev top-1 with CSLS: 32.4 / 28.4 / 27.5 / 29.4 (M17: 30.4 / 21.6 / 20.6 / 25.5). The low-level AV
+  member gets the largest single weight (0.3).
+- **Submissions** (local, gitignored, validated: 102 x 102 int64, each row a permutation of 1001..1102):
+  `submissions/final_super_csls5_cv/` (CSLS on; organizers approved hubness correction) and `final_super_csls0_cv/`.
+- **Open:** test-set centering (M18) on top; lowaud + lowvis as two
+  separate members instead of lowav.
+- **Reproduce:** extract features (M20 + `extract_features.py --model dinov2_b --all-frames --frames 8`, `--model vjepa2_l
+  --frames 16`), then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member
+  decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:clap_all:1
+  --member decw:lowav_all:1 --max-seconds 1.5 --csls 5 --csls-stage member --experiment final_super_csls5`.
+
+## M22: Everything combined = AlexNet v2 (track-alexnet) + CLAP + low-level AV (track-audio, after merging track-alexnet)
+- **What:** `scripts/ensemble.py` (no change), 8 members: decw clip_b32, dinov2_b_patch_all, vjepa2_l_all f16, con clip_b32
+  two_tower_d256 (3 seeds), decw clip_b32_mid8_all f8, decw alexnet_p6 f8 (krabiki-51's v2 member, built here with
+  `extract_features.py --model alexnet --frames 8` + `lowlevel_features.py alexnet-pool --pool 6`), decw clap_all f1,
+  decw lowav_all f1 (M20). N > 5, so steepest-ascent pair transfers. CV tables `results/merged_*_cv.csv`.
+- **Result** (dev mean over sub-01..04):
+
+  | Ensemble | settings | CV weights (dino / vjepa / con / alex / clap / lowav; clip and block-8 0.0) | LOFO | top-1 / top-5 / median |
+  |---|---|---|---|---|
+  | v2 (ALEXNET_FINDINGS.md), reproduced exactly | center-test, CSLS 5 member | 0.3 / 0.2 / 0.2 / 0.3 / - / - | 0.236 | 29.4 / 63.0 / 3.5 |
+  | **v2 + clap + lowav** | **center-test, CSLS 5 member** | **0.2 / 0.2 / 0.1 / 0.2 / 0.1 / 0.2** (per-subject chosen) | **0.264** | **33.1 / 67.9 / 2.9** |
+  | v2 + clap + lowav (backup) | none | 0.2 / 0.1 / 0.2 / 0.2 / 0.1 / 0.2 | 0.246 | 26.2 / 57.6 / 4.0 |
+
+  Paired Wilcoxon on 408 dev trial ranks, combined vs v2: **183 better / 90 worse, p = 5e-7**. Per-subject top-1:
+  40.2 / 36.3 / 25.5 / 30.4 (v2: 33.3 / 36.3 / 20.6 / 27.5). Spatial (AlexNet) and temporal / audio (lowav, clap) low-level
+  members are complementary: both keep weight.
+- **Submissions** (local, gitignored, validated 102 x 102 int64 permutations): `submissions/merged_all_ctr_csls5_cv/`
+  (headline candidate) and `submissions/merged_all_plain_cv/` (backup).
+- **Before adopting:** same AUDIT.md checks as final_csls (independent rescore, label-shuffle / row-permutation controls;
+  M20 already has shuffled-pair controls for clap and lowav).
+- **Reproduce:** features as in M20 / M21 / track-alexnet, then `PYTHONPATH=src:scripts python scripts/ensemble.py
+  --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256
+  --member decw:clip_b32_mid8_all:8 --member decw:alexnet_p6:8 --member decw:clap_all:1 --member decw:lowav_all:1
+  --max-seconds 1.5 --center-test --csls 5 --csls-stage member --experiment merged_all_ctr_csls5`.
+
 ## M24: Low-level stimulus features (AlexNet conv maps, hand-crafted descriptors) as ensemble members (krabiki-51, branch `track-matching`)
 - **Code:** `src/eegmr/lowlevel.py`, `scripts/lowlevel_features.py`, `tests/test_lowlevel.py`; selection CSVs `results/sel{1,2,3,4}_*_cv.csv`, `results/fin6x_*_cv.csv`; summary in PROGRESS.md. All selections by training-only CV (`--cv-only`), headline settings (center-test, per-member CSLS k = 5, exhaustive weights).
 - **Features:** torchvision AlexNet IMAGENET1K_V1 pre-ReLU conv maps pooled to 6x6 (conv2 from the cached `alexnet_f8`, conv1/3/4/5 extracted fresh; 8 frames, mean), and 255 hand-crafted descriptors (Lab / hue colour, spatial-frequency and orientation power, Sobel edges, frame-difference and Farneback flow motion).
