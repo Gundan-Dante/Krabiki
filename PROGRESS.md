@@ -1,21 +1,109 @@
-# Progress: track-proven
+# Progress: Krabiki (all tracks)
 
-## Current best (mean over sub-01..04 test sets, 102 candidates)
-| Experiment | top-1 | top-5 | median rank |
+Overview of all research as of 2026-10-18 (work paused for machine relocation). Numbers are dev = mean over the sub-01..04
+test sets (4 × 102 recordings, 102 candidates). Chance is 1.0% top-1 / 4.9% top-5 / median rank 51.5; the standard error
+is about ±1.1 pts top-1 and ±1.9 pts top-5. Every model choice is made by **train-CV** (5-fold on training videos,
+KFold seed 0, all 6 subjects). Dev only confirms, with a paired Wilcoxon on per-trial ranks. Per-model details:
+`MODEL_BACKLOG.md` (M0–M19). Orientation for agents: `CLAUDE.md`.
+
+## 1. Current best
+
+| Model | top-1 | top-5 | Status |
 |---|---|---|---|
-| **decw_clip_b32_f8_t1.5s_w5-60** (decoding with noise-whitened EEG input; `--head decoding --dec-whiten`) | **14.7%** | **42.2%** | **7.5** |
-| dec_clip_b32_f8_t1.5s_w5-60 (decoding: EEG 50–600 ms → standardized CLIP B-32 f8 features, ridge, cosine; alpha by retrieval CV) | 14.0% | 36.0% | 8.2 |
-| enc_clip_b32_f8_t1.5s_w5-60_retrieval (encoding: CLIP → EEG, scaler → PCA 95% → ridge, correlation) | 5.4% | 21.1% | 17.5 |
+| **M17**: CV-weighted ensemble of whitened decoders on CLIP B-32 + DINOv2-B patch + V-JEPA 2-L (16 f) + contrastive two-tower head | **20.8%** | **48.0%** | Best without CSLS. Per subject top-1 23.5 / 20.6 / 15.7 / 23.5. sub-05/06 files in `../Krabiki-matching/submissions/ens_vj_b_cv/` (local, gitignored). |
+| M17 + CSLS (k=5, per member, CV-chosen) | **24.5%** | **56.6%** | **Pending the organizers' OK**: CSLS is label-free but transductive (uses all 102 test rows jointly). Must stay off by default until approved. |
+| M8a: single whitened CLIP decoder | 14.7% | 42.2% | Simplest strong model. Committed submission: `submissions/decw_clip_b32_f8_t1.5s_w5-60/`. |
 
-Decoding direction found by session krabiki-e1 and reproduced in-package (`linear.DecodingModel`, `predict.py --head
-decoding`). Train-CV agrees without test labels: 0.207–0.315 per subject vs about 0.33–0.44 for encoding.
-Noise-whitened decoder input (M8 in MODEL_BACKLOG.md): paired vs plain decoder 187 better / 141 worse, p=0.002; train-CV better on all 6 subjects. Reliability-weighted cosine was tried and not adopted (CV and dev disagree).
-Submission files: `submissions/decw_clip_b32_f8_t1.5s_w5-60/sub-0{5,6}_ranked_candidate_list.npy` (best); plain decoder in `submissions/dec_clip_b32_f8_t1.5s_w5-60/` (encoding files are
-still in `submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/`).
-CSLS is dropped for now (2026-10-18). k=10 on top gave 6.1% / 22.3% / 17.1, not significant (p=0.36). `--csls-k` stays in the code, off by default.
+Note (krabiki-51): M17's 4-member weights came from a greedy search that stopped in a local optimum. The exhaustive search
+prefers 0.0 / 0.4 / 0.3 / 0.3 (CV +0.0006). `ensemble.py` now searches exhaustively for N ≤ 5, and the final runs must be redone.
 
-> **2026-10-18: all results below the "Whitening fix" section were run with the whitened transform** (scaler → PCA →
-> scaler, now `--whiten`). Their "alpha / crop / CSLS doesn't matter" conclusions are superseded where noted.
+## 2. How we got here (dev top-1 / top-5)
+
+| Step | Model | top-1 | top-5 | Key idea |
+|---|---|---|---|---|
+| M0 | AlexNet encoding (organizers' recipe) | 2.0 | 8.6 | baseline |
+| M1 | CLIP B-32 encoding, whitened features | 4.2 | 16.9 | better features |
+| M2 | CLIP encoding, second scaler removed | 5.4 | 21.1 | **bug fix**: post-PCA StandardScaler made ZᵀZ = n·I, so ridge alpha was a no-op |
+| M5 | + noise-whitened Euclidean matching | 8.8 | 31.6 | per-timepoint Ledoit-Wolf noise covariance from OOF residuals |
+| M3 | **decoding** EEG → CLIP, cosine | 14.0 | 36.0 | flipped direction: compare in a semantic space, not noisy EEG space |
+| M8a | + noise-whitened decoder input | 14.7 | 42.2 | M5's whitening applied to the decoder input |
+| M11 | + DINOv2-B patch decoder (0.5 / 0.5) | 15.2 | 45.3 | a second, different feature space |
+| M13 | + contrastive two-tower head | 17.4 | 46.8 | InfoNCE head is weak alone but complementary |
+| M17 | + V-JEPA 2 decoder | 20.8 | 48.0 | video model; the most different view (RSA 0.48–0.50 vs CLIP / DINOv2) |
+| M17 + CSLS | hubness correction | 24.5 | 56.6 | pending the rules question |
+
+Pipeline: EEG 50–600 ms (17 ch × 55 samples at 100 Hz, 1.5 s crop, FIR decimation) → per-timepoint noise whitening →
+standardize → ridge (alpha by retrieval CV) → predicted feature vector → cosine vs 102 candidates → row-z → CV-weighted
+sum over members → (CSLS) → ranking.
+
+## 3. Findings that held up
+- **Decoding beats encoding** (M3 vs M2: p = 9e-17). The shuffled-label control gives chance.
+- **Noise whitening** of the EEG helps both directions (M5, M8a). Every statistic comes from training data only.
+- **Feature diversity drives the ensemble**: CLIP, DINOv2-patch and V-JEPA decoders all get real weight; the contrastive
+  head adds on top (verified with a shuffled-pair control).
+- **Information timing**: peaks ~150–250 ms, weak after ~600 ms. 50–600 ms is the best window for both directions
+  (2f's 60-config sweep, decoder CV, cc's window tests).
+- **Train/test shift (e1)**: test EEG std is 0.63–0.78× training on every subject (likely repeat-averaged), and the test-set
+  mean evoked response is *anti*-correlated with the training mean (−0.68 to −0.94) and ~2× larger. Centering test EEG
+  on its own mean (rule 5) is a small, consistent gain (M18). CSLS gains are large partly because of this.
+- **CSLS on decoders** is a large label-free gain (M18, krabiki-cc; verified by e1): decw CLIP 14.7 / 42.2 → 17.4 / 48.5;
+  M17 → 24.5 / 56.6 with CV-chosen settings. It was not significant on the old encoder.
+- **Stage 3 (paused, krabiki-2f)**: EEGNet is weak alone (CV 0.293 vs ridge 0.232), but as a 0.25 member next to M8a it
+  improves CV on 6 of 6 subjects (0.2240). Its gap to ridge shrinks with more data. Dev confirmation pending (see the end
+  of this file).
+
+## 4. Tried and closed (negative or null)
+Frame count / onset pooling (M6: CLIP frames within a clip are near-identical); PCA threshold (M2 sweep); per-channel z-score
+(already normalized); subtracting the TRAINING mean ERP (M5 #1; the train/test shift explains it); reliability-weighted
+matching / cosine (M5 #2a, M8b: first CV/dev disagreement, an example of CV overfitting); alpha re-tuning under Euclid
+(M9); the encoder as a member next to whitened decoders (M9, weight 0); DINOv2 CLS token (M10); contrastive heads alone
+and ridge warm start (M12); CLIP ViT-L-14 (worse than B-32), time jitter, extra windows 150–350 / 600–1200 ms,
+candidate centering, std rescaling (M18); THINGS-EEG2 zero-shot transfer and prior (M15: ~2× chance only, stimulus-domain
+gap; pretraining Steps 1–2 dropped); fusion with Azamat's time-staged experts (M19: his 9.1 / 25.7 reproduced exactly,
+weight 0 next to M17).
+
+## 5. Data and rules decisions
+- **Channel names** (from the organizers): Pz P3 P7 O1 Oz O2 P4 P8 P1 P5 PO7 PO3 POz PO4 PO8 P6 P2. Preprocessing:
+  0.1–40 Hz, ICA blinks removed, 500 Hz. These are the same 17 channels as THINGS-EEG2's preprocessed release.
+- **Excluded**: the EEG Moments Dataset (OpenNeuro ds008257, likely contains this challenge's EEG), BOLD Moments /
+  Algonauts 2021 data and annotations, anything built on the 1,102 Moments-in-Time clips, and models trained on them
+  (e.g. TRIBE v2). The user is informing the organizers.
+- **External data survey** (`DATA_SURVEY.md`): THINGS-EEG2 tested (M15, no-go). Video-EEG candidates: only SEED-DV
+  fits (gated application, weak signal); CineBrain is a poor fit. Recommendation: no further external EEG for now.
+- **Open questions for the organizers**: is CSLS (transductive, label-free) allowed? Are gated datasets "public"?
+  One-to-one assignment is not used.
+- **User decisions**: subject pooling paused; audio deferred; captioning models held.
+
+## 6. Where the code is
+| Branch (worktree) | Contents |
+|---|---|
+| `track-proven` (`/home/kparpie/Krabiki`) | main package `src/eegmr`, decoders (`decoding.py`), contrastive (M12), GPU helpers, Stage 3 WIP (`a8ca716`), CLAUDE.md, audits |
+| `track-matching` (`../Krabiki-matching`) | matching (M5), `scripts/ensemble.py` (N-member CV weighting, `con:` / `zs:` members, CSLS / center-test WIP `f1c0314`), THINGS-EEG2 Step 0 |
+| `track-dinov2` (`../Krabiki-dinov2`) | DINOv2-B extractor, `--all-frames` CLI |
+| `track-vjepa` (`../Krabiki-vjepa`) | V-JEPA 2 extractor (transformers 5.18.0 pinned), `scripts/zero_cost.py` (M18), CLIP ViT-L features |
+| `track-viz` (`../Krabiki-viz`) | 8 presentation figures + `presentation/make_figures.py`, `FIGURES.md` |
+
+All five branches are on GitHub (Gundan-Dante/Krabiki; commits use the GitHub noreply email). Remote `main` is Azamat's
+separate track, left untouched. The two WIP commits are local.
+
+## 7. Resume plan
+1. **krabiki-51**: final ensemble runs with the exhaustive weight search: M17 members ± center-test ± CSLS (k = 5 / 10,
+   per member vs after blending) ± the CLIP block-8 member; write both submission sets (with / without CSLS). Resume
+   notes: track-matching PROGRESS.md "STATUS (paused for relocation)". The member similarity cache
+   (`results/similarity/_cache`) is local.
+2. **krabiki-2f**: Stage 3 dev confirmation (command at the end of this file), then EEGNet as an ensemble member via
+   ensemble.py.
+3. Ensemble robustness: regularized stacking and rank fusion vs grid weights (one-time check).
+4. **Consolidation** (G1–G4 in IMPLEMENTATION_AUDIT.md): merge all branches into one; one command that reproduces the
+   final submission from saved per-subject weights (minutes) with a documented full retrain; README; tests. Decide CSLS
+   on / off from the organizers' answer.
+
+---
+
+# Detailed logs (track-proven)
+
+> Sections below are the original track-proven log. Results before the "Whitening fix" section used the whitened
+> transform (now `--whiten`), and their "alpha / crop / CSLS doesn't matter" conclusions are superseded where noted.
 
 ## Done
 - **Stage 0:** `eegmr.evaluate`, `eegmr.submission` (row order preserved, values are video IDs, asserts). Self-test:
@@ -162,12 +250,7 @@ Picked: 2a = p 0.5, 2b = per-timepoint covariance + negative squared Euclidean d
 - Torch (CUDA, float64 transform / float32 ridge) is used for the OOF predictions and matcher statistics; it matches the earlier sklearn/numpy CV scores to ≤6e-6 and `LedoitWolf` to 2e-14.
 
 ## Next
-- Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
-  PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
-  (CSLS: dropped for now.)
-- Bigger levers: features (DINOv2, audio, more frames).
-- Sliding 100 ms window scan to find where the signal is (also report figure §8.1); then tune the window inside 0–600 ms.
-- Decoding direction (EEG → CLIP space, cosine); DINOv2 and audio features; pooled subjects.
+Superseded by §7 "Resume plan" at the top of this file.
 
 ## Stage 3 feasibility (krabiki-2f), PAUSED 2026-10-18 for machine relocation; to be filed as M14
 - Train-CV (CLIP B-32, 6 subjects; ridge/M8a = 0.2319): MLP heads alone 0.243 ≈ linear 0.245; EEGNet alone 0.293; ShallowFBCSPNet ≈ chance (0.41–0.45: band-power features drop the evoked waveform); augmentation hurts slightly. **As a 0.25-weight ensemble member with M8a, EEGNet 0–800 ms gives 0.2240, better on 6/6 subjects** (MLP 0.2283, M12 two-tower 0.2290). A window control (linear/MLP on 0–800 ms: 0.2305/0.2291) shows the gain is from the conv architecture, not the window.
