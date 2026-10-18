@@ -1,14 +1,16 @@
-"""Standalone inference for the headline ensemble (final_csls) from an exported bundle. Needs only numpy and scipy.
+"""Standalone inference for a CV-weighted ensemble from an exported bundle (``scripts/export_bundle.py``). numpy + scipy only.
 
-Pipeline per subject (identical to scripts/ensemble.py at track-matching 7297a59, experiment fin5_ctr_m5):
+Pipeline per subject (identical to scripts/ensemble.py; the members, weights and options are in bundle_meta.json). For
+the headline final_csls (track-matching 7297a59, fin5_ctr_m5):
     test EEG (102, 17, 1500) @ 500 Hz
       -> crop to 0-1.5 s -> FIR zero-phase decimation x5 (100 Hz)       [eegmr.data.decimate]
-      -> center-test: replace the mean over the 102 recordings by the training mean   [ensemble.center_like]
-      -> per member: window 5:60 -> per-timepoint whitening (Sigma_t^-1/2) -> flatten (channel-major)
+      -> center-test (if set): replace the mean over the 102 recordings by the training mean   [ensemble.center_like]
+      -> per member: window 5:60 -> per-timepoint whitening (Sigma_t^-1/2; decw / con only) -> flatten (channel-major)
                      -> standardize with training stats
-           decw: ridge  pred = X @ B + y_mean  -> cosine vs candidates standardized with training-video stats
-           con : per seed  cos(X @ W_e, V @ W_v), row-z, mean over 3 seeds
-      -> CSLS k=5 per member -> row-z -> weighted sum (0 / 0.4 / 0.3 / 0.2 / 0.1)
+           decw / dec: ridge  pred = X @ B + y_mean  -> cosine vs candidates standardized with training-video stats
+           con       : per seed  cos(X @ W_e, V @ W_v), row-z, mean over the seeds
+      -> CSLS (if set) per member [stage "member"] -> row-z -> weighted sum (per-subject weights from the bundle)
+         -> CSLS on the blend [stage "blend"]
       -> rank: candidates 1001..1102 sorted by descending score, rows in the original recording order
 
 Example:
@@ -54,7 +56,9 @@ def csls(sim: np.ndarray, k: int) -> np.ndarray:
 def member_input(eeg: np.ndarray, w: dict, name: str, window: slice) -> np.ndarray:
     """Whitened (per timepoint) and standardized EEG window, flattened channel-major: ``(n, C * T_w)``."""
     x = eeg[..., window].astype(np.float64)
-    x = np.einsum("tcd,ndt->nct", w[f"{name}/whiteners"].astype(np.float64), x).reshape(len(x), -1)
+    if f"{name}/whiteners" in w:  # decw / con; the raw decoder (dec) has none
+        x = np.einsum("tcd,ndt->nct", w[f"{name}/whiteners"].astype(np.float64), x)
+    x = x.reshape(len(x), -1)
     return (x - w[f"{name}/x_mean"]) / w[f"{name}/x_std"]
 
 
@@ -63,7 +67,7 @@ def member_similarity(eeg: np.ndarray, w: dict, member: dict, candidates: np.nda
     name = member["name"]
     X = member_input(eeg, w, name, window)
     cand = (candidates.astype(np.float64) - w[f"{name}/f_mean"]) / w[f"{name}/f_std"]
-    if member["head"] == "decw":
+    if member["head"] in ("decw", "dec"):
         pred = X @ w[f"{name}/B"].astype(np.float64) + w[f"{name}/y_mean"]
         return normalize(pred) @ normalize(cand).T
     z = 0.0
@@ -88,12 +92,18 @@ def infer_subject(subject: int, bundle: Path, root: Path, meta: dict) -> np.ndar
                      meta["sfreq"], meta["decimate_factor"])
     if meta["center_test"]:
         eeg = (eeg - eeg.mean(axis=0) + w["train_eeg_mean"]).astype(np.float32)
+    weights = meta["weights"][str(subject)]
+    k, stage = meta.get("csls_k", 0), meta.get("csls_stage", "member")
     total = 0.0
-    for m in meta["members"]:
-        if m["weight"] == 0:
+    for m, weight in zip(meta["members"], weights):
+        if weight == 0:
             continue
         sim = member_similarity(eeg, w, m, np.load(bundle / "candidates" / f"{m['name']}.npy"), window, meta["con_seeds"])
-        total = total + m["weight"] * row_z(csls(sim, meta["csls_k"]))
+        if k and stage == "member":
+            sim = csls(sim, k)
+        total = total + weight * row_z(sim)
+    if k and stage == "blend":
+        total = csls(total, k)
     return rank_candidates(total)
 
 
