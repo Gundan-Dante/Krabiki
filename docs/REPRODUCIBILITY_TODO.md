@@ -6,11 +6,15 @@
 - `decw` stage rebuilt from scratch: all caches bit-identical to the v4b ones (sub-01..06).
 - Pooled DINOv2 member, sub-01, rebuilt from committed code: bit-identical.
 - Weight search on the GPU (`Evaluator.precompute`) gives exactly the same values as the old one.
+- **sub-05 (scored) rebuilt end to end from the feature caches:** all 7 members (CV folds + test) rebuilt from scratch;
+  13 of 14 caches bit-identical, pooled lowav within 6e-9 (BLAS thread count). The final blend with them gives the same
+  weights / LOFO 0.28716 and `sub-05_ranked_candidate_list.npy` identical to `final_v4b_csls`.
+- A fresh `git clone` of `submission` from GitHub runs `inference/predict.py` and reproduces sub-05/06 byte-for-byte.
 - Features rebuilt from scratch (krabiki-74): `clip_b32_f8`, `vjepa2_l_all_f16`, `lowlevel_all_f1` bit-identical.
 
 ## Still to test
-1. **`pool` stage:** rebuild all 3 pooled members × 6 subjects (`run_pipeline.sh pool`) and compare to the v4b caches.
-2. **Unpooled members:** V-JEPA, contrastive (3 seeds), descriptors, CLAP. Run the `ensemble` stage from an empty cache and compare the member caches.
+1. **`pool` stage:** rebuild all 3 pooled members for sub-01..04 and sub-06 (sub-05 done) (`run_pipeline.sh pool`) and compare to the v4b caches.
+2. **Unpooled members (sub-05 done):** V-JEPA, contrastive (3 seeds), descriptors, CLAP for the other subjects. Run the `ensemble` stage from an empty cache and compare the member caches.
 3. **End-to-end:** `bash training/run_pipeline.sh` (all stages) → `verify` must give sub-05/06 identical to `final_v4b_csls`.
 4. **Features not yet rebuilt:** `alexnet_c5p6_f8`, `clap_all_f1`, and `dinov2_b_patch_all_f8` via the original all-frames path.
 5. **`JOBS=3` parallel mode:** must give caches identical to `JOBS=1`. Known issue: parallel ensemble runs write the same `--cv-out` / `--results` log files, which harms only those logs, not the caches.
