@@ -6,16 +6,18 @@ is about ±1.1 pts top-1 and ±1.9 pts top-5. Every model choice is made by **tr
 KFold seed 0, all 6 subjects). Dev only confirms, with a paired Wilcoxon on per-trial ranks. Per-model details:
 `MODEL_BACKLOG.md` (M0–M19). Orientation for agents: `CLAUDE.md`.
 
-## 1. Current best
+## 1. Current best (FINAL selection, krabiki-51, exhaustive CV weights)
 
-| Model | top-1 | top-5 | Status |
-|---|---|---|---|
-| **M17**: CV-weighted ensemble of whitened decoders on CLIP B-32 + DINOv2-B patch + V-JEPA 2-L (16 f) + contrastive two-tower head | **20.8%** | **48.0%** | Best without CSLS. Per subject top-1 23.5 / 20.6 / 15.7 / 23.5. sub-05/06 files in `../Krabiki-matching/submissions/ens_vj_b_cv/` (local, gitignored). |
-| M17 + CSLS (k=5, per member, CV-chosen) | **24.5%** | **56.6%** | **Main candidate. CSLS was allowed by the organizers (2026-10-18).** It's label-free but transductive (uses all 102 test rows jointly). The final selection is being redone with exhaustive weights (krabiki-51). |
-| M8a: single whitened CLIP decoder | 14.7% | 42.2% | Simplest strong model. Committed submission: `submissions/decw_clip_b32_f8_t1.5s_w5-60/`. |
+| Set | Model | top-1 | top-5 | median | Status |
+|---|---|---|---|---|---|
+| **`submissions/final_csls/`** | Whitened decoders on DINOv2-B patch (0.4), V-JEPA 2-L 16 f (0.3), CLIP B-32 block-8 CLS (0.1), CLIP B-32 (0.0) + contrastive two-tower on CLIP (0.2, 3 seeds); test-set centering; CSLS k=5 per member | **24.0%** | **57.1%** | **4.25** | **Headline final.** CSLS allowed by the organizers (2026-10-18). LOFO 0.21235; vs old M17: better 209 / worse 82, p = 3e-13. |
+| `submissions/final_nocsls/` | Same members + Stage 3 EEGNet (s3), no centering, no CSLS | 19.1% | 50.0% | 5.5 | Backup |
+| `submissions/decw_clip_b32_f8_t1.5s_w5-60/` | Single whitened CLIP decoder (M8a) | 14.7% | 42.2% | 7.5 | Simple fallback |
 
-Note (krabiki-51): M17's 4-member weights came from a greedy search that stopped in a local optimum. The exhaustive search
-prefers 0.0 / 0.4 / 0.3 / 0.3 (CV +0.0006). `ensemble.py` now searches exhaustively for N ≤ 5, and the final runs must be redone.
+Reproduced independently by krabiki-e1 from the saved score matrices (24.0 / 57.1 / 4.25), and all sub-05/06 files are
+validated. Command and details: `submissions/README.md`, `../Krabiki-matching/results/ens_final_summary.md`. The weights are
+stable under a different contrastive seed set (≤ one 0.1 step). EEGNet adds only +0.0004 LOFO with CSLS, so it's left out
+of the headline (complexity tie-break). The old M17 greedy weight search was corrected to exhaustive.
 
 ## 2. How we got here (dev top-1 / top-5)
 
@@ -31,6 +33,7 @@ prefers 0.0 / 0.4 / 0.3 / 0.3 (CV +0.0006). `ensemble.py` now searches exhaustiv
 | M13 | + contrastive two-tower head | 17.4 | 46.8 | InfoNCE head is weak alone but complementary |
 | M17 | + V-JEPA 2 decoder | 20.8 | 48.0 | video model; the most different view (RSA 0.48–0.50 vs CLIP / DINOv2) |
 | M17 + CSLS | hubness correction | 24.5 | 56.6 | allowed by the organizers |
+| **Final** | + block-8 member, test centering, exhaustive CV weights, CSLS per member | **24.0** | **57.1** | final selection (§1) |
 
 Pipeline: EEG 50–600 ms (17 ch × 55 samples at 100 Hz, 1.5 s crop, FIR decimation) → per-timepoint noise whitening →
 standardize → ridge (alpha by retrieval CV) → predicted feature vector → cosine vs 102 candidates → row-z → CV-weighted
