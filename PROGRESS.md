@@ -221,6 +221,43 @@ sub-06 w = 1.0, which is identical to the `decw` decoder submission). Format val
 remains the headline; the ensemble file is the CV-best alternative.
 Reproduce: `PYTHONPATH=src python scripts/ensemble.py --features clip_b32 --frames 8 --max-seconds 1.5 --decoder whitened --experiment ens_decw_encnoise --cv-out results/ensemble_cv_decw.csv`
 
+## N-member CV-weighted ensemble: CLIP + DINOv2 decoders (track-matching)
+`scripts/ensemble.py` now takes any number of members, `--member HEAD:FEATURES[:FRAMES]` with HEAD in `dec | decw | enc | enc_noise`; weights on the simplex (step 0.1),
+exhaustive for N ≤ 3, steepest-ascent pair transfers for N > 3. Same train-CV (KFold 5, seed 0; whiteners and matchers re-estimated per outer fold; alphas from the full
+training set), same criterion (mean of E[top-1] and E[top-5] of 102), strategies compared by leave-one-fold-out (best single member / equal / global w / per-subject w,
+simplest within 0.0005 of the best wins). Regression check: two members `decw:clip_b32` + `enc_noise:clip_b32` reproduce the previous result exactly
+(LOFO 0.1550 / 0.1411 / 0.1547 / 0.1553, same weights).
+
+Members (whitened decoders, per-subject train-CV mean percentile rank, sub-01..06; weights are the CV-chosen global ones):
+
+| Member | CV sub-01..06 | CV (E1+E5)/2 | dev top-1 / top-5 / median |
+|---|---|---|---|
+| decw:clip_b32 | 0.192 / 0.206 / 0.251 / 0.219 / 0.247 / 0.277 | 0.1550 | 14.7 / 42.2 / 7.5 |
+| decw:dinov2_b_patch_all | 0.180 / 0.204 / 0.251 / 0.203 / 0.237 / 0.267 | 0.1609 | 13.0 / 41.7 / 7.5 |
+| decw:dinov2_b_cls_all | 0.222 / 0.238 / 0.281 / 0.248 / 0.278 / 0.310 | 0.1280 | 10.8 / 34.3 / 11.9 |
+| enc_noise:clip_b32 | 0.294 / 0.297 / 0.280 / 0.298 / 0.302 / 0.344 | 0.1021 | 8.8 / 31.6 / 11.6 |
+
+**Result: DINOv2-patch adds to CLIP.** The CV-chosen weights are 0.5 / 0.5 (CLIP / patch) in every configuration; the encoder and the CLS decoder get weight 0.
+Leave-one-fold-out (E1+E5)/2: CLIP 0.155 → patch alone 0.161 → **CLIP + patch 0.172** (equal and global agree; per-subject 0.171, i.e. no gain from per-subject weights).
+
+| Members | CV-chosen weights (global) | LOFO: best single / equal / global / per-subject | dev (sub-01..04) top-1 / top-5 / median | vs CLIP decw alone (better / worse, p) |
+|---|---|---|---|---|
+| CLIP + patch | 0.5 / 0.5 | 0.161 / 0.172 / 0.172 / 0.171 | **15.2 / 45.3 / 7.2** | 179 / 140, 0.0024 |
+| + enc_noise | 0.5 / 0.5 / 0 | 0.161 / 0.164 / 0.172 / 0.169 | same as above | same |
+| + CLS + enc_noise (coordinate ascent) | 0.5 / 0.5 / 0 / 0 | 0.161 / 0.168 / 0.172 / 0.169 | same as above | same |
+
+Versus the best single member by CV (patch, dev 13.0 / 41.7 / 7.5): better 192 / worse 132, p = 0.0007. Versus CLIP alone, top-1 +0.5 pts, top-5 +3.1 pts, median rank 7.5 → 7.2.
+Dev, per subject (CLIP + patch, top-1 / top-5 / median): sub-01 20.6 / 49.0 / 6.0, sub-02 13.7 / 45.1 / 7.0, sub-03 12.7 / 41.2 / 9.5, sub-04 13.7 / 46.1 / 6.5.
+Per-subject weights (CLIP / patch): 0.5/0.5, 0.5/0.5, 0.4/0.6, 0.3/0.7, 0.5/0.5, 0.4/0.6; their dev result is 15.7 / 44.1 / 7.4 (p = 0.016 vs CLIP) and LOFO says it does not beat the global weights.
+
+Diagnostic only, not a selection: the equal-weight 3-member blend (0.4 / 0.3 / 0.3 incl. the encoder) reaches 17.9 / 44.6 / 7.2 on dev (better 200 / worse 136 vs CLIP, p = 8e-6),
+but the CV prefers the 2-member blend by a clear margin (LOFO 0.164 vs 0.172), so it is not used. The dev set is 4 subjects × 102 trials (±1.1 pts on top-1).
+
+Submissions (identical for all three configurations): `submissions/ens_clip_patch_cv/` (sub-05/06; format validated: 102 × 102 int64, rows are permutations of the test IDs;
+top-1 agrees with the CLIP decw submission on 65% / 57% of rows). Local only (gitignored).
+Reproduce: `PYTHONPATH=src python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --max-seconds 1.5 --experiment ens_clip_patch`
+(CV tables in `results/ens_clip_patch_cv.csv`, `results/ens_clip_patch_enc_cv.csv`, `results/ens_4way_cv.csv`).
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
