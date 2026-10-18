@@ -34,19 +34,10 @@ EEG recording (17 ch x 1500 samples, 500 Hz)
 ```
 
 ### 2.1 EEG preprocessing
-- **Crop and decimate.** The 500 Hz recording is cropped to 0–1.5 s before filtering, so no later samples leak into
-  the window. It is then decimated to 100 Hz with `scipy.signal.decimate(…, 5, ftype="fir", zero_phase=True)`.
-- **Window.** Samples 5–60, i.e. 50–600 ms after video onset: 17 channels × 55 time points = 935 values. Information
-  peaks at 150–250 ms. Cross-validation chose this window over wider and later ones for every subject.
-- **Test-set centering.** The mean of a subject's 102 test recordings (per channel and time point) is replaced by the
-  mean of its training recordings. This is unsupervised normalization of test recordings, which rule 5 allows. The test
-  recordings are cleaner than training trials (likely repeat-averaged), and their mean response differs from the
-  training mean.
-- **Noise whitening.** EEG noise is correlated across neighbouring electrodes. From training data only, we fit an
-  encoding model (video features → EEG: standardize, PCA 95 %, ridge) with 5-fold out-of-fold predictions, take the
-  residuals, and estimate for each of the 55 time points a 17 × 17 Ledoit-Wolf shrinkage covariance Σₜ. Every
-  recording, training and test, is multiplied by Σₜ^(−1/2) at each time point. Then the 935 values are standardized with
-  training statistics.
+- Crop to 0–1.5 s, then FIR decimation to 100 Hz; window 50–600 ms (17 channels × 55 samples = 935 values).
+- **Test-set centering:** the test recordings' own mean is replaced by the training mean (unsupervised normalization).
+- **Noise whitening:** per time point, the 17 channels are multiplied by Σ^(−1/2) of a Ledoit-Wolf noise covariance
+  estimated from training residuals. This decorrelates noise shared across electrodes.
 
 ### 2.2 Video descriptions (frozen public models, nothing fine-tuned)
 
@@ -75,31 +66,12 @@ of the subject's training videos, for both the training targets and the 102 cand
 | F | 6 CLAP | whitened ridge decoder | 0.1 |
 | G | 7 low-level AV | subject-pooled whitened ridge decoder | 0.2 |
 
-- **Whitened ridge decoder.** Ridge regression from the 935 whitened, standardized EEG values to the standardized
-  feature vector, with an unpenalized intercept, solved for all penalties at once via one SVD. A test recording
-  becomes a predicted feature vector, and each candidate is scored by cosine similarity. Ridge shrinks the predictions,
-  so only their direction carries information. The penalty α is chosen per subject and member by retrieval
-  cross-validation: hold out 1/5 of the training videos, rank them against each other, and keep the α with the best
-  mean percentile rank of the true video. The grid is 37 values from 1 to 10⁹, and the whiteners are re-estimated
-  inside every fold. The chosen α are 1,000–3,162.
-- **Subject pooling** (members A, D, G). A subject's decoder is fitted on its own training recordings (weight 1) plus
-  the other five subjects' **training** recordings (weight λ). This is a weighted ridge with rows scaled by √w and a
-  weighted-mean intercept. Each subject's EEG is whitened with its own noise model and standardized with its own
-  statistics; the targets use the target subject's training-video statistics.
-  - λ and α are chosen jointly per subject on λ ∈ {0, 0.05, 0.1, 0.2, 0.5} by zero-shot cross-validation: in every
-    fold, the other subjects' recordings of the held-out videos are removed, as at test time.
-  - Chosen λ (sub-01..06): DINOv2 0.1 for all subjects; AlexNet conv5 0.05 / 0.05 / 0.05 / 0.1 / 0.1 / 0.1; low-level
-    AV 0.05 / 0.05 / 0.1 / 0.1 / 0.05 / 0.1.
-  - Full pooling (λ = 1) hurts, because brains differ; a small share of other subjects' data helps, most of all for the
-    weakest subject.
-- **Contrastive two-tower head** (member C). Two linear towers map the EEG (935 → 256) and the CLIP vector (512 → 256)
-  into a shared space, compared by cosine.
-  - Training: symmetric InfoNCE loss with a learnable temperature (init 0.07, clamped to [0.01, 1]); full-batch AdamW,
-    learning rate 10⁻³, weight decay 10⁻².
-  - Early stopping: on an inner 15 % split of the training videos; the head is then retrained on all training videos
-    for the selected number of steps.
-  - Seeds: three (0, 1, 2), each row z-scored, then averaged. Weak alone, it makes different errors from the ridge
-    decoders, and removing it costs cross-validation score.
+- **Whitened ridge decoder:** ridge regression from the whitened EEG to the video's feature vector; candidates are
+  scored by cosine similarity. The penalty is chosen per subject by cross-validation on training videos.
+- **Subject pooling** (A, D, G): the decoder also uses the other five subjects' **training** recordings at a small
+  weight λ (0.05–0.1, chosen per subject by cross-validation in which their recordings of held-out videos are removed).
+- **Contrastive head** (C): two linear towers (EEG → 256, CLIP → 256) trained with InfoNCE and early stopping;
+  3 seeds averaged.
 
 ### 2.4 Combining the members
 1. **CSLS hub correction** (per member, k = 5): `2·S − r_rec − r_cand`, where `r_cand[j]` is the mean of candidate j's 5
