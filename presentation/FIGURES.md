@@ -7,9 +7,9 @@ recordings of subjects 1–4 (4 × 102 = 408 trials, 102 candidate videos each);
 Removed from the earlier set (still in git history): the whitening-bug figure and the feature bar chart.
 
 ## 1. `fig1_progress.png`: how the score grew
-Each bar adds one idea. We start at 2% exact matches with a standard image network and reach 32% with the current model (v3); the
-true video is among the 5 best guesses 67% of the time (chance: 5%). Whiskers show how uncertain each number is with only 408 test
-recordings. The last slot (v4, subject pooling) is not finished yet.
+Each bar adds one idea. We start at 2% exact matches with a standard image network and reach 33% with the current model (v4, which
+adds subject pooling to v3); the true video is among the 5 best guesses 69% of the time (chance: 5%). Whiskers show how uncertain each
+number is with only 408 test recordings, so the last small step (v3 to v4) is not significant on its own.
 
 ## 2. `fig2_encoding_vs_decoding.png`: two directions, one winner
 Encoding predicts the brain signal for a video and compares it with the real recording. Decoding turns the recording into a description
@@ -28,25 +28,26 @@ low-level members. (b) Members that look at different things give different scor
 low-level sound+image member was not measured (that run was cut off).
 
 ## 5. `fig5_expected_score.png`: what to expect on the two scored subjects
-Bars show the real test scores for subjects 1–4. Diamonds are the training-data estimate (cross-validation), available for all six.
-For the scored subjects 5 and 6 (no labels) the hatched bars are projections: the cross-validation estimate scaled by the test/cross-validation
-ratio seen on subjects 1–4 (whisker: lowest to highest ratio): about 26% (21–32) and 18% (14–22) top-1, 58% and 48% top-5. These are
-estimates, not measurements. Subjects 5 and 6 are the two weakest by cross-validation, and our dev numbers were selected among many
-variants, so the true values are likely at the lower end. An earlier audit applied the same logic to the previous model and projected about 15% / 40%
-on average (AUDIT.md §5).
+Bars show the real test scores of the current model (v4) for subjects 1–4. Diamonds are the training-data estimate (cross-validation),
+available for all six. For the scored subjects 5 and 6 (no labels) the hatched bars are projections: the cross-validation estimate scaled
+by the test/cross-validation ratio seen on subjects 1–4 (whisker: lowest to highest ratio): about 25% (21–30) and 19% (16–22) top-1,
+60% (51–74) and 51% (43–62) top-5. These are estimates, not measurements. Subjects 5 and 6 are the two weakest by cross-validation, and
+our dev numbers were selected among many variants, so the true values are likely at the lower end. An earlier audit applied the same
+logic to an earlier model and projected about 15% / 40% on average (AUDIT.md §5).
 
 ## 6. `fig6_subject_pooling.png`: borrowing a little data from other subjects
 Adding the other subjects' recordings with a small weight raises the cross-validation score for every subject, most for the weakest subject
-(sub-06, +14%). On the test set the effect for one decoder was small and not significant (12.7 / 41.7 → 13.0 / 41.7). This is still being
-integrated (v4).
+(sub-06, +14%). On the test set the effect for one decoder was small and not significant (12.7 / 41.7 → 13.0 / 41.7); in the full ensemble it
+is part of the v4 model (33.3% vs 32.4% top-1).
 
 ## 7. `fig7_recall_at_k.png`: where does the true video land?
-For each recording we rank all 102 videos. The curve shows how often the true one is within the first k guesses: 32% at k=1, 67% at
+For each recording we rank all 102 videos. The curve shows how often the true one is within the first k guesses: 33% at k=1, 69% at
 k=5, against a dashed chance line. Every modelling step lifts the whole curve.
 
 ## 8. `fig8_examples.png`: one hit and two near misses
-Subject 1, the model's three best guesses next to the true video (middle frame). The first recording is a correct first guess. In the others
-the true video is ranked 2nd and 4th, and the wrong guesses are partly similar scenes (water, outdoors). Examples were picked to illustrate
+Subject 1 (v4 model), the three best guesses next to the true video (middle frame). The first recording is a correct first guess. In the others
+the true video is ranked 2nd and 4th. The wrong guesses are sometimes similar scenes (people at an event for a crowd scene) and sometimes not
+(water scenes for a straw sculpture), so the examples are suggestive, not proof of what the model "sees". They were picked to illustrate
 (one hit, two near misses), not at random.
 
 ## 9. `fig9_diagnostics.png`: two diagnostics

@@ -47,7 +47,7 @@ plt.rcParams.update({
 MODELS = {
     "enc": "enc_clip", "enc_noise": "enc_clip_noise_euclid", "dec": "dec_clip", "decw": "decw_clip",
     "dino_patch": "decw_dino_patch", "dino_cls": "decw_dino_cls", "ens": "ens_clip_dino_patch",
-    "v3": "v3_headline", "final": "final_csls",
+    "v3": "v3_headline", "v4": "v4_headline", "final": "final_csls",
 }
 
 
@@ -105,8 +105,8 @@ def fig1_progress() -> None:
         ("M13\n+ contrastive\nhead", 17.4, 46.8, C_ENS, None),
         ("M17\n+ V-JEPA\nvideo model", 20.8, 48.0, C_ENS, None),
         ("final_csls\n+ fixes,\nCSLS", 24.0, 57.1, C_ENS, "///"),
-        ("v3\nheadline:\n+ sound,\nlow-level", 32.4, 66.7, C_V3, "///"),
-        ("v4\npooling", None, None, None, None),
+        ("v3\n+ sound,\nlow-level", 32.4, 66.7, C_V3, "///"),
+        ("v4 headline\n+ subject\npooling", 33.3, 68.9, C_V3, "///"),
     ]
     n_trials = 408
     fig, axes = plt.subplots(1, 2, figsize=(24, 7.4))
@@ -133,7 +133,7 @@ def fig1_progress() -> None:
     fig.legend(handles, ["Encoding (video \u2192 predicted EEG)", "Decoding (EEG \u2192 video features)", "Ensemble of decoders",
                          "Ensemble + sound and low-level members", "Hatched: with centering + CSLS", "Chance"],
                loc="lower center", ncol=3, bbox_to_anchor=(0.5, -0.11), fontsize=13)
-    fig.suptitle("Each idea moved the score: from 2% to 32% top-1 (chance is 1%)", fontsize=22, fontweight="bold", y=1.02)
+    fig.suptitle("Each idea moved the score: from 2% to 33% top-1 (chance is 1%)", fontsize=22, fontweight="bold", y=1.02)
     fig.text(0.5, -0.17, "Development subjects 1\u20134, 408 recordings, 102 candidate videos each. Whiskers: approximate 95% interval (binomial, 408 recordings).",
              ha="center", fontsize=12, color=MUTED)
     fig.tight_layout()
@@ -248,12 +248,12 @@ def fig4_time() -> None:
 def fig6_recall() -> None:
     ks = np.arange(1, N_CAND + 1)
     fig, ax = plt.subplots(figsize=(11, 6.8))
-    for model, label, color, ls, lw in [("v3", "v3 ensemble (headline)", C_V3, "-", 3.6), ("final", "final_csls (previous headline)", C_ENS, "-", 2.4),
+    for model, label, color, ls, lw in [("v4", "v4 ensemble (headline)", C_V3, "-", 3.6), ("v3", "v3 ensemble", C_ENS, "--", 2.4), ("final", "final_csls (previous headline)", C_ENS, "-", 2.4),
                                         ("decw", "CLIP decoder alone (M8a)", C_DEC, "-", 2.4), ("enc_noise", "Encoder + noise-aware matching (M5)", C_ENC, "-", 2.4)]:
         r = dev_ranks(model)
         ax.plot(ks, [(r <= k).mean() * 100 for k in ks], color=color, lw=lw, ls=ls, label=label)
     ax.plot(ks, ks / N_CAND * 100, color=MUTED, ls="--", lw=2, label="chance")
-    r = dev_ranks("v3")
+    r = dev_ranks("v4")
     for k in (1, 5, 10, 20):
         ax.plot(k, (r <= k).mean() * 100, "o", color=C_V3, ms=9, zorder=5)
         ax.annotate(f"{(r <= k).mean() * 100:.0f}%", (k, (r <= k).mean() * 100), xytext=(12, -30), textcoords="offset points",
@@ -280,7 +280,7 @@ def _frame(video_id: int) -> np.ndarray:
 
 def fig7_examples(picks: list[tuple[int, int]] | None = None) -> None:
     """Rows: (subject, recording index). Default: one hit and two near misses from sub-01, fixed by the rule below."""
-    S = similarity("v3", 1)
+    S = similarity("v4", 1)
     ids = load_test_labels(1)
     ranks = true_ranks(S, ids)
     if picks is None:
@@ -288,7 +288,7 @@ def fig7_examples(picks: list[tuple[int, int]] | None = None) -> None:
         picks = [(1, i) for i in chosen]
     fig, axes = plt.subplots(len(picks), 4, figsize=(14, 3.5 * len(picks)))
     for row, (sub, i) in enumerate(picks):
-        S, ids = similarity("v3", sub), load_test_labels(sub)
+        S, ids = similarity("v4", sub), load_test_labels(sub)
         order = np.argsort(-S[i])
         top3 = TEST_IDS[order[:3]]
         rank = int(true_ranks(S, ids)[i])
@@ -301,7 +301,7 @@ def fig7_examples(picks: list[tuple[int, int]] | None = None) -> None:
             for sp in ax.spines.values():
                 sp.set_visible(True), sp.set_color(color), sp.set_linewidth(5 if color == C_ENS else 1.5)
             ax.set_title(title if col else f"{title} (ranked #{rank})", fontsize=15, color=INK if col == 0 else color)
-    fig.suptitle("One hit and two near misses (sub-01, v3 model)", fontsize=20, fontweight="bold", y=1.0)
+    fig.suptitle("One hit and two near misses (sub-01, v4 model)", fontsize=20, fontweight="bold", y=1.0)
     fig.tight_layout()
     save(fig, "fig8_examples")
 
@@ -368,7 +368,7 @@ def fig4_ensemble() -> None:
     ax.set_xlabel("Score lost when removed (higher = matters more)", fontsize=14)
     ax.set_title("(c) Remove one member")
     fig.suptitle("Diverse views of the video, and each one earns its place", fontsize=22, fontweight="bold", y=1.02)
-    fig.text(0.5, -0.03, "(a) CV-chosen weights per subject (sum = 1). (b) Correlation of the members' test similarity scores, mean over 6 subjects, recomputed from saved "
+    fig.text(0.5, -0.03, "v3 ensemble. (a) CV-chosen weights per subject (sum = 1). (b) Correlation of the members' test similarity scores, mean over 6 subjects, recomputed from saved "
              "matrices (within 0.02 of M27). (c) Change in leave-one-fold-out CV (training data only) of the 7-member ensemble.", ha="center", fontsize=12, color=MUTED)
     fig.tight_layout()
     save(fig, "fig4_ensemble_anatomy")
@@ -376,8 +376,8 @@ def fig4_ensemble() -> None:
 
 # ---------------------------------------------------------------- figure 5: expected score on the scored subjects
 def fig5_expected() -> None:
-    cv = pd.read_csv(DATA / "v3_cv_selected.csv").set_index("subject")
-    dev = {s: true_ranks(similarity("v3", s), load_test_labels(s)) for s in DEV_SUBJECTS}
+    cv = pd.read_csv(DATA / "v4_cv_selected.csv").set_index("subject")
+    dev = {s: true_ranks(similarity("v4", s), load_test_labels(s)) for s in DEV_SUBJECTS}
     d1 = {s: (dev[s] <= 1).mean() * 100 for s in dev}
     d5 = {s: (dev[s] <= 5).mean() * 100 for s in dev}
     e1, e5 = cv.exp_top1 * 100, cv.exp_top5 * 100
