@@ -152,13 +152,15 @@ def retrieval_cv_scores(
     n_folds: int = 5,
     seed: int = 0,
     whiten: bool = False,
+    erp_subtract: bool = False,
     device: str | None = None,
 ) -> np.ndarray:
     """Mean percentile rank (0 = always first, 0.5 = chance) of the true video on held-out training folds.
 
     ``features``: ``(n, D)``; ``eeg``: ``(n, C, T)``. Returns ``(len(windows), len(alphas))``. Ridge solves each EEG
     target independently, so one prediction over the union of the windows serves every window. Held-out videos are
-    retrieved among each other with the same correlation matching used at test time.
+    retrieved among each other with the same correlation matching used at test time. With ``erp_subtract`` the
+    fold's training-mean response is removed from the held-out and predicted EEG first.
     """
     device = device or default_device()
     lo, hi = min(w.start for w in windows), max(w.stop for w in windows)
@@ -169,8 +171,12 @@ def retrieval_cv_scores(
     for trn, val in KFold(n_folds, shuffle=True, random_state=seed).split(np.arange(len(features))):
         basis = ridge_basis(features[trn], pca_variance, whiten, device)
         pred = ridge_predict(basis, eeg[trn].flatten(1), features[val], alphas).view(len(alphas), len(val), *eeg.shape[1:])
+        measured = eeg[val]
+        if erp_subtract:
+            erp = eeg[trn].mean(dim=0)
+            measured, pred = measured - erp, pred - erp
         for i, w in enumerate(local):
-            sim = correlation_similarity(eeg[val], pred, w)  # (alphas, val, val)
+            sim = correlation_similarity(measured, pred, w)  # (alphas, val, val)
             ranks = (sim >= sim.diagonal(dim1=1, dim2=2)[..., None]).sum(dim=-1)  # true video is on the diagonal
             scores[i] += ((ranks - 1) / (len(val) - 1)).sum(dim=-1).double()
         del pred

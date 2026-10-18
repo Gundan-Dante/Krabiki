@@ -64,6 +64,7 @@ class EncodingModel:
     n_folds: int = 5
     seed: int = 0
     whiten: bool = False
+    erp_subtract: bool = False  # alpha selection only: match on EEG minus the (fold-)training mean response
     pipeline: Pipeline | None = None
     eeg_shape: tuple[int, ...] = ()
     cv_curve: np.ndarray | None = None
@@ -76,7 +77,7 @@ class EncodingModel:
         else:
             self.cv_curve = retrieval_cv_curve(features, eeg, self.alphas, self.window,
                                                pca_variance=self.pca_variance, n_folds=self.n_folds,
-                                               seed=self.seed, whiten=self.whiten)
+                                               seed=self.seed, whiten=self.whiten, erp_subtract=self.erp_subtract)
             ridge = Ridge(alpha=float(self.alphas[np.argmin(self.cv_curve)]))
         self.pipeline = Pipeline(_feature_transform(self.pca_variance, self.whiten).steps + [("ridge", ridge)])
         self.pipeline.fit(features, eeg.reshape(len(eeg), -1))

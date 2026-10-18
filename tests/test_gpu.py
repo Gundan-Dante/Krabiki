@@ -24,7 +24,7 @@ def data() -> tuple[np.ndarray, np.ndarray]:
     return features, eeg
 
 
-def numpy_cv_curve(features, eeg, alphas, window, pca, whiten):
+def numpy_cv_curve(features, eeg, alphas, window, pca, whiten, erp_subtract=False):
     """The original numpy/sklearn retrieval CV, kept here as the reference."""
     scores = np.zeros(len(alphas))
     eeg = eeg[..., window]
@@ -35,9 +35,10 @@ def numpy_cv_curve(features, eeg, alphas, window, pca, whiten):
         ym = Y.mean(0)
         U, s, Vt = np.linalg.svd(Zt, full_matrices=False)
         UtY, ZV = U.T @ (Y - ym), Zv @ Vt.T
+        erp = ym.reshape(eeg.shape[1:]) if erp_subtract else 0.0
         for k, a in enumerate(alphas):
             p = (ZV * (s / (s**2 + a))) @ UtY + ym
-            sim = correlation_similarity(eeg[val], p.reshape(len(val), *eeg.shape[1:]), slice(None))
+            sim = correlation_similarity(eeg[val] - erp, p.reshape(len(val), *eeg.shape[1:]) - erp, slice(None))
             scores[k] += np.sum(((sim >= np.diag(sim)[:, None]).sum(1) - 1) / (len(val) - 1))
     return scores / len(features)
 
@@ -76,3 +77,23 @@ def test_retrieval_cv_matches_numpy(data, device, pca, whiten):
         assert np.abs(out[i] - ref).max() < 2e-3  # float32 can flip near-ties in a few ranks
         if not whiten:  # whitened curves are flat, so their argmin is arbitrary
             assert out[i].argmin() == ref.argmin()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_retrieval_cv_erp_subtract_matches_numpy(data, device):
+    features, eeg = data
+    out = gpu.retrieval_cv_scores(features, eeg, ALPHAS, [slice(2, 15)], erp_subtract=True, device=device)[0]
+    ref = numpy_cv_curve(features, eeg, ALPHAS, slice(2, 15), 0.95, False, erp_subtract=True)
+    assert np.abs(out - ref).max() < 2e-3 and out.argmin() == ref.argmin()
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_matching_fit_predict_matches_sklearn(data, device):
+    from eegmr.matching import fit_predict
+
+    features, eeg = data
+    pred = fit_predict(features[:200], eeg[:200], features[200:], 1e3, 0.95, False, device)
+    pipe = _feature_transform(0.95)
+    ref = Ridge(alpha=1e3).fit(pipe.fit_transform(features[:200]), eeg[:200].reshape(200, -1))
+    ref = ref.predict(pipe.transform(features[200:])).reshape(pred.shape)
+    assert np.abs(pred - ref).max() < 1e-4 * max(1.0, np.abs(ref).max())

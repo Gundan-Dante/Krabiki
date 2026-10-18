@@ -117,6 +117,48 @@ Infrastructure: `eegmr.gpu` (shared torch module: multi-alpha ridge via one SVD,
 encoding and decoding retrieval CV; 16 parity tests in `tests/test_gpu.py`). All-frames feature cache
 (`features.extract_all_frames`, 5 min for all 1,102 videos; frames per video vary from 45 to 92 because fps varies).
 
+## Matching experiments (track-matching)
+Same encoding model throughout (CLIP B-32, 8 frames, scaler → PCA 95% → ridge, EEG 0–1.5 s, alpha by retrieval CV, window 5:60);
+only the similarity between measured and predicted EEG changes. Code: `src/eegmr/matching.py`, flags in `scripts/predict.py`
+(`--erp-subtract`, `--match {corr,weighted,noise}`, `--match-power`, `--noise-cov`, `--noise-similarity`). All statistics come from the
+subject's training trials; the weighted / noise statistics use 5-fold OOF predictions (same folds as `retrieval_cv_curve`, alpha fixed
+to the chosen one, transform refit per fold). With all options off the output is bit-identical (`match_base` = 5.4 / 21.1 / 17.5).
+
+**Variant choice by training-only CV** (`scripts/select_matching.py` → `results/matching_cv.csv`): mean percentile rank of the true video
+on held-out folds, 0.5 = chance, lower is better. Matcher parameters are estimated inside each outer fold's training part from an inner
+5-fold OOF, so nothing scored is used to fit the matcher. Mean over sub-01..04 (the picks are the same with all six subjects):
+
+| Variant | no ERP subtraction | + ERP subtraction |
+|---|---|---|
+| corr (baseline) | 0.3120 | 0.3127 |
+| weighted p=0.5 / 1 / 2 | **0.3145** / 0.3253 / 0.3410 | **0.3150** / 0.3256 / 0.3419 |
+| noise, per-timepoint cov, corr | 0.3017 | 0.3018 |
+| noise, per-timepoint cov, Euclid | **0.2924** | **0.2924** |
+| noise, pooled cov, corr | 0.3060 | 0.3065 |
+| noise, pooled cov, Euclid | 0.2972 | 0.2972 |
+
+Picked: 2a = p 0.5, 2b = per-timepoint covariance + negative squared Euclidean distance (both with and without #1).
+
+**Dev results** (sub-01..04 test sets, 102 candidates; paired Wilcoxon on the 408 per-trial ranks vs `match_base`, `scripts/compare_matching.py`):
+
+| Experiment | sub-01 top1/top5/med | sub-02 | sub-03 | sub-04 | mean top-1 | mean top-5 | mean med. rank | better/worse | p |
+|---|---|---|---|---|---|---|---|---|---|
+| match_base | 7.8 / 24.5 / 15.0 | 4.9 / 24.5 / 13.5 | 5.9 / 23.5 / 18.0 | 2.9 / 11.8 / 23.5 | 5.4% | 21.1% | 17.5 | – | – |
+| + #1 `match_erp` | 7.8 / 24.5 / 13.0 | 2.9 / 23.5 / 13.0 | 5.9 / 23.5 / 17.5 | 2.9 / 10.8 / 23.5 | 4.9% | 20.6% | 16.8 | 107 / 108 | 0.87 |
+| + 2a `match_weighted_p0.5` | 4.9 / 27.5 / 14.0 | 4.9 / 25.5 / 17.5 | 5.9 / 22.5 / 16.0 | 2.9 / 11.8 / 19.0 | 4.7% | 21.8% | 16.6 | 189 / 174 | 0.81 |
+| + 2b `match_noise_pertime_euclid` | 5.9 / 32.4 / 11.5 | 8.8 / 30.4 / 14.0 | 13.7 / 33.3 / 9.0 | 6.9 / 30.4 / 12.0 | **8.8%** | **31.6%** | **11.6** | 246 / 143 | **2.9e-7** |
+| + #1 + 2a `match_erp_weighted_p0.5` | 4.9 / 24.5 / 13.0 | 6.9 / 24.5 / 16.0 | 5.9 / 22.5 / 17.0 | 1.0 / 12.7 / 19.0 | 4.7% | 21.1% | 16.2 | 185 / 177 | 0.87 |
+| + #1 + 2b `match_erp_noise_pertime_euclid` | identical to 2b | | | | 8.8% | 31.6% | 11.6 | 246 / 143 | 2.9e-7 |
+
+- **#1 ERP subtraction does nothing** (p=0.87). Under Euclidean matching it cancels exactly (the distance only sees m − p), so row 6 equals row 4 bit for bit.
+- **2a reliability weighting does not help**: CV gets monotonically worse with p, and the best p=0.5 is still worse than plain correlation; dev is flat (p=0.81).
+- **2b noise whitening + Euclid is the one that works**: 5.4 → 8.8% top-1, 21.1 → 31.6% top-5, median rank 17.5 → 11.6 (top-5 improves on every subject; median rank on three of four, sub-02 is 13.5 → 14.0). Per-subject CV agrees on sub-02..06 but not on sub-01 (CV prefers plain corr there, 0.278 vs 0.294), where dev top-1 fell (7.8 → 5.9) while top-5 and median rank improved.
+- The correlation versions of 2b (CV 0.3017 per-time, 0.3060 pooled) are better than plain corr (0.3120) but worse than Euclid; they were not run on the dev test sets. I did not separate "whitening" from "Euclid" on dev.
+- Submission for sub-05/06 of the best variant: `submissions/match_noise_pertime_euclid/` (gitignored, local only). Reproduce:
+  `PYTHONPATH=src python scripts/predict.py --features clip_b32 --frames 8 --max-seconds 1.5 --alpha-selection retrieval --subjects 1 2 3 4 5 6 --match noise --noise-cov per_time --noise-similarity euclid --experiment match_noise_pertime_euclid`
+- Caveats: alpha is still chosen by plain-correlation retrieval CV, but Euclid distance depends on prediction amplitude, which alpha shrinks, so a re-tuned alpha under Euclid may do better. The CV score uses the alpha chosen on the full training set (training data only, but not nested). The OOF-based matcher is fitted on predictions from 80%-data models and applied to predictions from the full-data model.
+- Torch (CUDA, float64 transform / float32 ridge) is used for the OOF predictions and matcher statistics; it matches the earlier sklearn/numpy CV scores to ≤6e-6 and `LedoitWolf` to 2e-14.
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
