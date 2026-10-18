@@ -15,7 +15,7 @@ correlation paths (``kind="corr"``) use :func:`eegmr.linear.correlation_similari
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Literal
+from typing import Iterator, Literal
 
 import numpy as np
 import torch
@@ -173,3 +173,15 @@ def nested_cv_scores(features: np.ndarray, eeg: np.ndarray, alpha: float, matche
             ranks = (sim >= np.diag(sim)[:, None]).sum(axis=1)
             totals[name] += np.sum((ranks - 1) / (len(val) - 1))
     return {name: total / len(features) for name, total in totals.items()}
+
+
+def nested_fold_similarities(features: np.ndarray, eeg: np.ndarray, alpha: float, matcher: Matcher,
+                             pca_variance: float = 0.95, whiten: bool = False, n_folds: int = 5, seed: int = 0,
+                             device: str = DEVICE) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield ``(val_indices, similarity)`` for each outer fold: held-out recordings x held-out predictions, matched
+    with ``matcher`` whose parameters come from the fold's training part only (as in :func:`nested_cv_scores`)."""
+    for trn, val in KFold(n_folds, shuffle=True, random_state=seed).split(features):
+        pred_val = fit_predict(features[trn], eeg[trn], features[val], alpha, pca_variance, whiten, device)
+        oof = (oof_predictions(features[trn], eeg[trn], alpha, pca_variance, whiten, n_folds, seed, device)
+               if matcher.kind != "corr" else None)
+        yield val, replace(matcher, device=device).fit(eeg[trn], oof).similarity(eeg[val], pred_val)

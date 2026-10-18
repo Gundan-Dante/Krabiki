@@ -156,7 +156,49 @@ def _dinov2_b_gpu(device: str) -> GpuEncoder:
     return run
 
 
-GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu}
+CLIP_L14_PRETRAINED = "laion2b_s32b_b82k"  # HF laion/CLIP-ViT-L-14-laion2B-s32B-b82K, revision 1627032197142fbe2a7cfec626f4ced3ae60d07a (2022-09-14, MIT)
+
+
+def _clip_l14_gpu(device: str) -> GpuEncoder:
+    """open_clip ViT-L-14 / laion2b_s32b_b82k image embedding (768-d), fp16 on GPU, preprocessing from the model's own
+    config (bicubic resize to 224, its mean/std). The videos are square, so resize + centre crop is a plain resize."""
+    import open_clip
+
+    model = open_clip.create_model_and_transforms("ViT-L-14", pretrained=CLIP_L14_PRETRAINED)[0].eval().to(device).half()
+    cfg = model.visual.preprocess_cfg
+    mean = torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1)
+    std = torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1)
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        return model.encode_image(((x.clamp(0, 1) - mean) / std).half()).float()
+
+    return run
+
+
+def _clip_b32_mid_gpu(device: str, block: int = 8) -> GpuEncoder:
+    """CLIP B-32 (laion2b_s34b_b79k) residual-stream CLS token after ``block`` of its 12 transformer blocks (768-d)."""
+    import open_clip
+
+    model = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")[0].eval().to(device)
+    mean = torch.tensor(open_clip.OPENAI_DATASET_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(open_clip.OPENAI_DATASET_STD, device=device).view(1, 3, 1, 1)
+    grabbed: dict[str, torch.Tensor] = {}
+    model.visual.transformer.resblocks[block - 1].register_forward_hook(lambda m, i, o: grabbed.__setitem__("x", o))
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        model.encode_image((x.clamp(0, 1) - mean) / std)
+        h = grabbed["x"]
+        return (h[:, 0] if model.visual.transformer.batch_first else h[0]).float()
+
+    return run
+
+
+GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu,
+                                                       "clip_l14": _clip_l14_gpu, "clip_b32_mid8": _clip_b32_mid_gpu}
 
 
 def split_dinov2(n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR, name: str = "dinov2_b") -> list[Path]:
@@ -224,6 +266,39 @@ def extract_all_frames(
     return out
 
 
+class _VideoSubset(_VideoFrames):
+    """Only the ``n_frames`` frames :func:`read_frames` would pick, uint8 ``(n, H, W, 3)``."""
+
+    def __init__(self, ids: np.ndarray, root: Path, n_frames: int) -> None:
+        super().__init__(ids, root)
+        self.n_frames = n_frames
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        frames = super().__getitem__(i)
+        return frames[((np.arange(self.n_frames) + 0.5) * len(frames) / self.n_frames).astype(int)]
+
+
+def extract_frame_subset(
+    name: str,
+    n_frames: int,
+    root: Path = DEFAULT_ROOT,
+    feature_dir: Path = DEFAULT_FEATURE_DIR,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    num_workers: int = 3,
+) -> Path:
+    """GPU-embed only the ``n_frames`` frames of each video (``read_frames`` indices) and write ``<name>_all_f<n>.npz``
+    directly (the same file :func:`derive_frame_subset` would give, without embedding every frame)."""
+    encode = GPU_ENCODERS[name](device)
+    loader = torch.utils.data.DataLoader(_VideoSubset(ALL_IDS, root, n_frames), batch_size=None, num_workers=num_workers)
+    per_video = []
+    for frames in tqdm(loader, desc=f"{name} f{n_frames}"):
+        per_video.append(encode(frames.to(device).permute(0, 3, 1, 2).float() / 255.0).cpu().numpy())
+    picked = np.stack(per_video).astype(np.float16)
+    out = feature_path(f"{name}_all", n_frames, feature_dir)
+    np.savez(out, ids=ALL_IDS, mean=np.stack(per_video).mean(axis=1).astype(np.float32), frames=picked)
+    return out
+
+
 def derive_frame_subset(name: str, n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR) -> Path:
     """Write ``<name>_all_f<n>.npz`` (ids, mean, frames) from the all-frames cache, with read_frames' indices."""
     with np.load(all_frames_path(name, feature_dir)) as f:
@@ -271,3 +346,86 @@ def load_features(name: str, n_frames: int, ids: np.ndarray, feature_dir: Path =
     rows = np.searchsorted(all_ids, ids)
     assert np.array_equal(all_ids[rows], ids), "requested IDs missing from feature cache"
     return values[rows]
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# Clip-level video encoder (V-JEPA 2): one forward pass embeds a whole clip of n frames, so there are no per-frame
+# features. Cache: features/<name>_all_f<n>.npz with ids, mean (1102, D) and frames (1102, S, D), where "frames" holds
+# the mean token embedding of S consecutive temporal segments (for segment pooling). n in the file name is the number
+# of frames fed to the model, so load_features("vjepa2_l_all", 16, ids) works. The frames follow read_frames' indices.
+# ---------------------------------------------------------------------------------------------------------------
+
+VJEPA2_REPO = "facebook/vjepa2-vitl-fpc64-256"  # MIT licence; pretrained on VideoMix22M (SSv2, Kinetics, HowTo100M, YT-Temporal-1B, ImageNet)
+VJEPA2_REVISION = "b3c1679b7c34d3255ef3547f27c7b226aefab26f"
+VJEPA2_SEGMENTS = 4
+
+
+def _vjepa2_l(device: str, dtype: torch.dtype = torch.float16, crop: bool = True) -> Callable[[torch.Tensor], torch.Tensor]:
+    """V-JEPA 2 ViT-L/16 (fpc64, 256 px, tubelet 2) via transformers. Input: one clip ``(T, 3, H, W)`` in [0, 1].
+
+    Preprocessing as in the model's video_preprocessor_config: bilinear resize to 292 px, centre crop 256, ImageNet
+    mean/std (``crop=False`` resizes straight to 256 and keeps the whole frame instead). Output: ``(S, 1024)``, the mean of
+    the encoder's final token embeddings (``get_vision_features``) within S temporal segments; the mean over segments is
+    the mean over all tokens. Tokens are ordered time-major (tubelet grid T/2 x 16 x 16).
+    """
+    from transformers import AutoModel
+
+    model = AutoModel.from_pretrained(VJEPA2_REPO, revision=VJEPA2_REVISION, dtype=dtype).eval().to(device)
+    mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
+    std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
+
+    @torch.no_grad()
+    def run(clip: torch.Tensor) -> torch.Tensor:
+        side = 292 if crop else 256
+        x = torch.nn.functional.interpolate(clip, size=(side, side), mode="bilinear", antialias=True, align_corners=False)
+        if crop:
+            o = (side - 256) // 2
+            x = x[..., o:o + 256, o:o + 256]
+        x = ((x.clamp(0, 1) - mean) / std).unsqueeze(0).to(dtype)  # (1, T, 3, 256, 256)
+        tokens = model.get_vision_features(pixel_values_videos=x).float()  # (1, T/2 * 256, 1024)
+        t = clip.shape[0] // 2
+        tokens = tokens.view(t, -1, tokens.shape[-1])  # (T/2, 256, D)
+        return torch.stack([s.mean(dim=(0, 1)) for s in tokens.tensor_split(min(VJEPA2_SEGMENTS, t), dim=0)])
+
+    return run
+
+
+CLIP_ENCODERS: dict[str, Callable[..., Callable[[torch.Tensor], torch.Tensor]]] = {"vjepa2_l": _vjepa2_l}
+
+
+class _VideoClip(torch.utils.data.Dataset):
+    """``n_frames`` RGB frames of a video, uint8 ``(n, H, W, 3)``, at the same indices as :func:`read_frames`."""
+
+    def __init__(self, ids: np.ndarray, root: Path, n_frames: int) -> None:
+        self.ids, self.root, self.n_frames = ids, root, n_frames
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        cv2.setNumThreads(1)
+        return np.stack(read_frames(video_path(int(self.ids[i]), self.root), self.n_frames))
+
+
+def extract_clip_features(
+    name: str,
+    n_frames: int,
+    root: Path = DEFAULT_ROOT,
+    feature_dir: Path = DEFAULT_FEATURE_DIR,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    ids: np.ndarray = ALL_IDS,
+    dtype: torch.dtype = torch.float16,
+    num_workers: int = 3,
+    crop: bool = True,
+) -> Path:
+    """Embed each video as one clip of ``n_frames`` frames and cache ``<name>_all_f<n>.npz`` (see section comment)."""
+    encode = CLIP_ENCODERS[name](device, dtype, crop)
+    loader = torch.utils.data.DataLoader(_VideoClip(ids, root, n_frames), batch_size=None, num_workers=num_workers)
+    segs = []
+    for clip in tqdm(loader, desc=f"{name} f{n_frames}", total=len(ids)):
+        segs.append(encode(clip.to(device).permute(0, 3, 1, 2).float() / 255.0).cpu().numpy())
+    segs = np.stack(segs)
+    out = feature_path(f"{name}_all", n_frames, feature_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out, ids=ids, mean=segs.mean(axis=1).astype(np.float32), frames=segs.astype(np.float16))
+    return out
