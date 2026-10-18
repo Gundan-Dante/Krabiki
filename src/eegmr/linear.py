@@ -50,11 +50,13 @@ def retrieval_cv_curve(
     n_folds: int = 5,
     seed: int = 0,
     whiten: bool = False,
+    erp_subtract: bool = False,
 ) -> np.ndarray:
     """Mean percentile rank (0 = always first, 0.5 = chance) of the true video on held-out training folds, per alpha.
 
     Each fold refits the feature transform on its own training part, then solves ridge for all alphas at once via
     one SVD. Held-out videos are retrieved among each other with the same correlation matching used at test time.
+    With ``erp_subtract`` the fold's training-mean response is removed from the held-out and predicted EEG first.
     """
     scores = np.zeros(len(alphas))
     for trn, val in KFold(n_folds, shuffle=True, random_state=seed).split(features):
@@ -64,9 +66,14 @@ def retrieval_cv_curve(
         y_mean = Y_trn.mean(axis=0)
         U, s, Vt = np.linalg.svd(Z_trn, full_matrices=False)  # Z_trn is column-centred: PCA output on its own fit data
         UtY, ZV = U.T @ (Y_trn - y_mean), Z_val @ Vt.T
+        erp = y_mean.reshape(eeg.shape[1:])
         for k, alpha in enumerate(alphas):
             pred = (ZV * (s / (s**2 + alpha))) @ UtY + y_mean
-            sim = correlation_similarity(eeg[val], pred.reshape(len(val), *eeg.shape[1:]), window)
+            pred = pred.reshape(len(val), *eeg.shape[1:])
+            if erp_subtract:
+                sim = correlation_similarity(eeg[val] - erp, pred - erp, window)
+            else:
+                sim = correlation_similarity(eeg[val], pred, window)
             ranks = (sim >= np.diag(sim)[:, None]).sum(axis=1)  # true video is on the diagonal
             scores[k] += np.sum((ranks - 1) / (len(val) - 1))
     return scores / len(features)
@@ -88,6 +95,7 @@ class EncodingModel:
     n_folds: int = 5
     seed: int = 0
     whiten: bool = False
+    erp_subtract: bool = False  # alpha selection only: match on EEG minus the (fold-)training mean response
     pipeline: Pipeline | None = None
     eeg_shape: tuple[int, ...] = ()
     cv_curve: np.ndarray | None = None
@@ -99,7 +107,7 @@ class EncodingModel:
             ridge = RidgeCV(alphas=self.alphas)
         else:
             self.cv_curve = retrieval_cv_curve(features, eeg, self.alphas, self.window, self.pca_variance,
-                                               self.n_folds, self.seed, self.whiten)
+                                               self.n_folds, self.seed, self.whiten, self.erp_subtract)
             ridge = Ridge(alpha=float(self.alphas[np.argmin(self.cv_curve)]))
         self.pipeline = Pipeline(_feature_transform(self.pca_variance, self.whiten).steps + [("ridge", ridge)])
         self.pipeline.fit(features, eeg.reshape(len(eeg), -1))

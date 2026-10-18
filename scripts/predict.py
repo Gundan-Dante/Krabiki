@@ -19,7 +19,8 @@ import numpy as np
 from eegmr.data import DEFAULT_ROOT, SFREQ, TEST_IDS, channel_stats, decimate, zscore_channels, load_test, load_test_labels, load_train
 from eegmr.evaluate import evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
-from eegmr.linear import EncodingModel, correlation_similarity
+from eegmr.linear import EncodingModel
+from eegmr.matching import Matcher, oof_predictions
 from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 
@@ -41,13 +42,17 @@ def run_subject(subject: int, args: argparse.Namespace) -> dict[str, float] | No
     if args.zscore:  # per-channel statistics from this subject's training recordings only
         stats = channel_stats(eeg_trn)
         eeg_trn, measured = zscore_channels(eeg_trn, stats), zscore_channels(measured, stats)
+    features_trn = load_features(args.features, args.frames, ids, args.feature_dir)
     model = EncodingModel(pca_variance=args.pca_variance, alpha_selection=args.alpha_selection,
-                          whiten=args.whiten,
-                          window=slice(*args.window)).fit(
-        load_features(args.features, args.frames, ids, args.feature_dir), eeg_trn)
+                          whiten=args.whiten, erp_subtract=args.erp_subtract,
+                          window=slice(*args.window)).fit(features_trn, eeg_trn)
     predicted = model.predict(load_features(args.features, args.frames, TEST_IDS, args.feature_dir))
     assert args.window[1] <= measured.shape[-1], f"window {args.window} exceeds {measured.shape[-1]} samples"
-    similarity = correlation_similarity(measured, predicted, slice(*args.window))
+    matcher = Matcher(kind=args.match, erp_subtract=args.erp_subtract, power=args.match_power,
+                      noise_cov=args.noise_cov, noise_similarity=args.noise_similarity, window=slice(*args.window))
+    oof = (oof_predictions(features_trn, eeg_trn, model.alpha, args.pca_variance, args.whiten)
+           if args.match != "corr" else None)  # training trials only, alpha fixed to the chosen one
+    similarity = matcher.fit(eeg_trn, oof).similarity(measured, predicted)
     if args.csls_k:
         similarity = csls(similarity, args.csls_k)
     sim_path = Path("results/similarity") / args.experiment / f"sub-{subject:02d}.npy"
@@ -79,6 +84,15 @@ def main() -> None:
     p.add_argument("--whiten", action="store_true",
                    help="standardize PCA components (makes alpha a no-op; only to reproduce runs before 2026-10-18)")
     p.add_argument("--zscore", action="store_true", help="z-score each EEG channel with training statistics")
+    p.add_argument("--erp-subtract", action="store_true",
+                   help="subtract the training-mean response from measured and predicted EEG before matching")
+    p.add_argument("--match", choices=["corr", "weighted", "noise"], default="corr",
+                   help="corr: Pearson correlation; weighted: reliability-weighted; noise: noise-whitened")
+    p.add_argument("--match-power", type=float, default=1.0, help="weighted: w = max(r, 0) ** power")
+    p.add_argument("--noise-cov", choices=["per_time", "pooled"], default="per_time",
+                   help="noise: Ledoit-Wolf covariance per timepoint, or one pooled over the window")
+    p.add_argument("--noise-similarity", choices=["corr", "euclid"], default="corr",
+                   help="noise: correlation or negative squared distance of the whitened EEG")
     p.add_argument("--csls-k", type=int, default=0, help="apply CSLS with this k (0 = off)")
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     p.add_argument("--feature-dir", type=Path, default=DEFAULT_FEATURE_DIR)
@@ -89,8 +103,13 @@ def main() -> None:
     crop = f"_t{args.max_seconds:g}s" if args.max_seconds is not None else ""
     zscore = ("_whiten" if args.whiten else "") + ("_z" if args.zscore else "")
     csls_tag = f"_csls{args.csls_k}" if args.csls_k else ""
+    match_tag = "_erp" if args.erp_subtract else ""
+    if args.match == "weighted":
+        match_tag += f"_weighted-p{args.match_power:g}"
+    elif args.match == "noise":
+        match_tag += f"_noise-{args.noise_cov.replace('_', '')}-{args.noise_similarity}"
     args.experiment = args.experiment or (f"enc_{args.features}_f{args.frames}{crop}_w{args.window[0]}-{args.window[1]}"
-                                          f"_{args.alpha_selection}{zscore}{csls_tag}")
+                                          f"_{args.alpha_selection}{zscore}{match_tag}{csls_tag}")
     args.out = args.out or Path("submissions") / args.experiment
 
     rows = []
