@@ -9,11 +9,33 @@ audio/
 *.mp4
 *.wav
 
-# python / jupyter
+# symlinked data / features in worktrees, external downloads
+/features
+ext_data/
+
+# python / jupyter / tooling
 __pycache__/
-*.pyc
+*.py[cod]
 .ipynb_checkpoints/
 *.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+.cache/
+*.log
+wandb/
+.vscode/
+.idea/
+.DS_Store
+
+# large model files (small final weights go in weights/, which is not ignored)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+!weights/**
 
 # experiment outputs: keep locally, commit only the canonical submission
 results/similarity/
