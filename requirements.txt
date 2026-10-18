@@ -120,6 +120,7 @@ pure_eval==0.2.4
 pycparser==3.11
 pydantic==2.14.1
 pydantic_core==2.50.1
+pyod==3.6.7
 Pygments==2.21.0
 pyparsing==3.3.3
 python-dateutil==2.9.0.post0

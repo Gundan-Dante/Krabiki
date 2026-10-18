@@ -562,3 +562,28 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   0.885 with whole-clip motion). Train-CV (E1+E5)/2 peaks at β=0 for both motion measures (0.21234). The best direction
   (V-JEPA on static clips, β=−0.25) gains ≤ 0.0001 pct rank. Per-subject best β has both signs, so the ≥5/6 same-sign rule
   fails. **Not adopted:** the CV member mix is already near-optimal per candidate, and motion carries no exploitable gating signal.
+
+## M24: S3 artifact-aware training (unsupervised outlier trials dropped / down-weighted): not adopted (branch `track-artifact`)
+- **What:** per training trial and channel (raw 500 Hz, 1.5 s crop): log variance, log peak-to-peak, kurtosis, log > 30 Hz
+  power, log line length (85 values). Per subject, pyod 3.6.7 HBOS + one-class SVM (default settings) on the standardized
+  features; ranks averaged; the top 5 / 10 / 15 % flagged. Flagged trials are dropped from, or down-weighted (ridge weight
+  0.25, exact weighted ridge in `eegmr.artifacts.WeightedDecoding`) in, each CV fold's fitting part only; every held-out
+  trial is still scored. No labels and no test data are used. Code: `src/eegmr/artifacts.py`, `scripts/artifact_cv.py`,
+  `tests/test_artifacts.py` (unit weights == unweighted decoder, weight 0 == dropping, spike detection).
+- **Setup:** same folds, alphas (ensemble `--sim-cache`), test centering and member-stage CSLS 5 as the final model; the
+  "none" row reproduces the cached ensemble CV exactly (asserted). Table: `results/artifact_cv_ctr_csls5.csv`.
+- **Result** (mean train-CV over 6 subjects; pct rank lower is better):
+
+  | Member | none | best drop | best weight | subjects better (best case) |
+  |---|---|---|---|---|
+  | decw clip_b32 | 0.2261 / 7.44 / 25.37 | 5 %: 0.2289 / 7.29 / 25.25 | 5 %: 0.2271 / 7.31 / 25.35 | 2 / 6 |
+  | decw dinov2_b_patch_all | 0.2170 / 8.19 / 27.06 | 5 %: 0.2203 / 7.81 / 26.34 | 15 %: 0.2218 / 8.03 / 26.95 | 3 / 6 |
+  | decw lowav_all | 0.2659 / 5.09 / 18.86 | 5 %: 0.2673 / 4.90 / 18.87 | 5 %: 0.2663 / 4.88 / 18.94 | 3 / 6 |
+
+  (pct rank / E[top-1] % / E[top-5] %.) Every setting worsens the percentile rank of every member, monotonically with the
+  flagged fraction; no setting improves a majority of subjects; the largest top-5 "gain" is +0.16 points (noise).
+- **Why (likely):** the released EEG is already cleaned (0.1-40 Hz, ICA blink removal); the flagged trials are mostly
+  ordinary noisy trials that still carry signal, and the decoder's per-timepoint noise whitening already handles noise.
+- **Status:** not adopted; the final model is unchanged (M22).
+- **Reproduce:** `PYTHONPATH=src:scripts python scripts/artifact_cv.py --member decw:clip_b32 --member
+  decw:dinov2_b_patch_all --member decw:lowav_all:1 --max-seconds 1.5 --center-test --csls 5`.
