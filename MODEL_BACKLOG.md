@@ -122,6 +122,36 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 
 ---
 
+## M8: Decoding with noise-whitened input / reliability-weighted cosine (krabiki-2f): (a) adopted, (b) not
+- **Code:** `src/eegmr/decoding.py` (`nested_cv_scores`, `DecodingVariant`), `scripts/select_decoding.py` →
+  `results/decoding_variants.csv`. Canonical run: `predict.py --head decoding --dec-whiten` →
+  `submissions/decw_clip_b32_f8_t1.5s_w5-60/`.
+- **(a) Noise-whitened input:** each timepoint's channel vector is multiplied by Σ_t^-1/2 (Ledoit-Wolf on the encoding
+  model's OOF residuals; encoding alpha from encoding retrieval CV) before the EEG → CLIP ridge. Decoder alpha is
+  re-chosen by nested train-CV, with whiteners re-estimated inside each outer fold. The chosen alpha rises from 56–562
+  to 1000–3162.
+- **(b) Reliability-weighted cosine:** each CLIP dimension is scaled by max(r_d, 0)^p, where r_d = corr(OOF-decoded, true)
+  on training trials (weights estimated inside each outer fold, at every alpha), p ∈ {0.5, 1, 2}.
+- **Train-CV (mean over 6 subjects):** raw 0.2553 | raw p0.5 / p1 / p2: 0.2461 / 0.2441 / 0.2545 | **whitened 0.2319**
+  (better on all 6 subjects) | whitened p0.5 / p1 / p2: 0.2225 / **0.2216** / 0.2323.
+- **Dev (sub-01..04), paired Wilcoxon vs M3 (raw):**
+
+| Variant | top-1 | top-5 | median rank | better / worse vs raw | p |
+|---|---|---|---|---|---|
+| raw (M3) | 14.0% | 36.0% | 8.25 | – | – |
+| **whitened** | **14.7%** | **42.2%** | **7.5** | 187 / 141 | **0.002** |
+| whitened p0.5 | 15.0% | 39.7% | 8.1 | 182 / 144 | 0.002 |
+| whitened p1 (CV pick) | 14.0% | 39.7% | 8.25 | 175 / 173 | 0.20 |
+| raw p0.5 / p1 / p2 | 12.7 / 14.2 / 13.2% | 39.2 / 39.2 / 35.5% | 9.4 / 9.0 / 10.6 | | 0.22 / 0.87 / 0.05 |
+
+- **Decision:** adopt (a). Top-5 +6.2 pts, improving on every dev subject (42.2 → 46.1 / 42.2 / 38.2 / 42.2 per subject).
+  Do not adopt (b): CV prefers p0.5–1 on top of whitening for all 6 subjects, but dev doesn't confirm it.
+  Against whitened alone: p0.5 is 139 better / 145 worse (p = 0.71), and p1 is 144 / 179 (p = 0.09, trending worse).
+  This is the first case where train-CV and dev disagree. A possible cause is that the weights fit the training
+  videos' feature distribution, which differs from the 102 test videos.
+
+---
+
 ## Ideas not yet implemented (backlog)
 
 | Idea | Expected value | Notes |
@@ -130,10 +160,10 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 | CLIP ViT-L-14 | medium | Bigger CLIP, fits on 8 GB GPU |
 | CV-weighted ensemble of heads and feature spaces | high, cheap | Needs out-of-fold similarity matrices |
 | Subject pooling (hierarchical: shrink each subject toward the group solution) | medium–high | Also enables a group-model fallback for unseen subjects. Test leave-one-subject-out |
-| Decoding with per-dimension reliability weights | medium | Decoding analogue of M5 #2 |
+| Decoding with per-dimension reliability weights | done → M8 (not adopted) | Decoding analogue of M5 #2 |
 | Reduced-rank regression / CCA | medium | Shared low-dim subspace. Still linear and fast |
 | Linear contrastive head (InfoNCE on frozen features) | medium–high | Optimizes ranking directly. Smallest step toward Stage 3 |
-| EEGNet / ATM-style contrastive EEG encoder (Stage 3) | high, costly | Train on all subjects, GPU |
+| **EEGNet / ATM-style contrastive EEG encoder (Stage 3)**: *perspective plan, after the feature upgrades* | high ceiling, costly, uncertain | Small CNN on raw EEG (17 × T), symmetric InfoNCE against frozen video features (CLIP / DINOv2), learnable temperature. **Data is the bottleneck:** ~970 trials per subject is little for a network, so it likely needs subject pooling (~5,500 trials, currently paused by the user) to beat ridge decoding. Plan when picked up: per-subject normalization plus a subject embedding, heavy regularization (dropout, ±20 ms shift, channel dropout, noise), early stopping on 10% held-out training videos. Compare against M3 at equal features. Possible ensemble member even if it doesn't win alone. |
 | Kernel ridge (RBF) | low–medium | Cheap test of whether nonlinearity helps |
 | CSLS on decoding similarities | low–medium | Was not significant on encoding |
 | One-to-one assignment (Hungarian / Sinkhorn) | high on top-1, rule risk | Exploits the test structure. Ask the organizers. Flag off by default |

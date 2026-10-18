@@ -3,12 +3,14 @@
 ## Current best (mean over sub-01..04 test sets, 102 candidates)
 | Experiment | top-1 | top-5 | median rank |
 |---|---|---|---|
-| **dec_clip_b32_f8_t1.5s_w5-60** (decoding: EEG 50–600 ms → standardized CLIP B-32 f8 features, ridge, cosine; alpha by retrieval CV) | **14.0%** | **36.0%** | **8.2** |
+| **decw_clip_b32_f8_t1.5s_w5-60** (decoding with noise-whitened EEG input; `--head decoding --dec-whiten`) | **14.7%** | **42.2%** | **7.5** |
+| dec_clip_b32_f8_t1.5s_w5-60 (decoding: EEG 50–600 ms → standardized CLIP B-32 f8 features, ridge, cosine; alpha by retrieval CV) | 14.0% | 36.0% | 8.2 |
 | enc_clip_b32_f8_t1.5s_w5-60_retrieval (encoding: CLIP → EEG, scaler → PCA 95% → ridge, correlation) | 5.4% | 21.1% | 17.5 |
 
 Decoding direction found by session krabiki-e1 and reproduced in-package (`linear.DecodingModel`, `predict.py --head
 decoding`). Train-CV agrees without test labels: 0.207–0.315 per subject vs about 0.33–0.44 for encoding.
-Submission files: `submissions/dec_clip_b32_f8_t1.5s_w5-60/sub-0{5,6}_ranked_candidate_list.npy` (encoding files are
+Noise-whitened decoder input (M8 in MODEL_BACKLOG.md): paired vs plain decoder 187 better / 141 worse, p=0.002; train-CV better on all 6 subjects. Reliability-weighted cosine was tried and not adopted (CV and dev disagree).
+Submission files: `submissions/decw_clip_b32_f8_t1.5s_w5-60/sub-0{5,6}_ranked_candidate_list.npy` (best); plain decoder in `submissions/dec_clip_b32_f8_t1.5s_w5-60/` (encoding files are
 still in `submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/`).
 CSLS is dropped for now (2026-10-18). k=10 on top gave 6.1% / 22.3% / 17.1, not significant (p=0.36). `--csls-k` stays in the code, off by default.
 

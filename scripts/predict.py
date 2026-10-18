@@ -19,7 +19,8 @@ import numpy as np
 from eegmr.data import DEFAULT_ROOT, SFREQ, TEST_IDS, channel_stats, decimate, zscore_channels, load_test, load_test_labels, load_train
 from eegmr.evaluate import evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
-from eegmr.linear import DecodingModel, EncodingModel
+from eegmr.decoding import DecodingVariant, nested_cv_scores
+from eegmr.linear import DEFAULT_ALPHAS, DecodingModel, EncodingModel, retrieval_cv_curve
 from eegmr.matching import Matcher, oof_predictions
 from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
@@ -47,7 +48,15 @@ def run_subject(subject: int, args: argparse.Namespace) -> dict[str, float] | No
     F_tst = load_features(args.features, args.frames, TEST_IDS, args.feature_dir, args.pooling)
     if args.head == "decoding":
         assert args.match == "corr" and not args.erp_subtract, "matching variants apply to the encoding head only"
-        model = DecodingModel(window=slice(*args.window)).fit(F_trn, eeg_trn)
+        if args.dec_whiten:  # noise-whitened decoder input; alpha by nested train-CV on the whitened input
+            enc_alpha = float(DEFAULT_ALPHAS[retrieval_cv_curve(F_trn, eeg_trn, DEFAULT_ALPHAS,
+                                                                slice(*args.window)).argmin()])
+            curve = nested_cv_scores(F_trn, eeg_trn, DEFAULT_ALPHAS, enc_alpha, powers=(),
+                                     window=slice(*args.window), inputs=("whitened",))["whitened"]
+            model = DecodingVariant(float(DEFAULT_ALPHAS[curve.argmin()]), True, None, enc_alpha,
+                                    slice(*args.window), cv_curve=curve).fit(F_trn, eeg_trn)
+        else:
+            model = DecodingModel(window=slice(*args.window)).fit(F_trn, eeg_trn)
         similarity = model.similarity(measured, F_tst)
     else:
         model = EncodingModel(pca_variance=args.pca_variance, alpha_selection=args.alpha_selection,
@@ -81,6 +90,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--head", choices=["encoding", "decoding"], default="encoding",
                    help="encoding: features -> EEG, correlation; decoding: EEG -> features, cosine (alpha by CV)")
+    p.add_argument("--dec-whiten", action="store_true",
+                   help="decoding: noise-whiten the EEG input per timepoint (encoding OOF residuals, Ledoit-Wolf)")
     p.add_argument("--features", required=True, help="feature cache name, e.g. alexnet or clip_b32")
     p.add_argument("--frames", type=int, default=8)
     p.add_argument("--pooling", default="mean", help="mean | first:<s> | concat | segments:<k>")
@@ -113,7 +124,7 @@ def main() -> None:
     zscore = ("_whiten" if args.whiten else "") + ("_z" if args.zscore else "")
     csls_tag = f"_csls{args.csls_k}" if args.csls_k else ""
     pool = "" if args.pooling == "mean" else "_" + args.pooling.replace(":", "")
-    head = "dec" if args.head == "decoding" else "enc"
+    head = ("decw" if args.dec_whiten else "dec") if args.head == "decoding" else "enc"
     selection = "" if args.head == "decoding" else f"_{args.alpha_selection}"
     match_tag = "_erp" if args.erp_subtract else ""
     if args.match == "weighted":
