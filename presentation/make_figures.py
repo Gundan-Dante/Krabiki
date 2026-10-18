@@ -369,7 +369,7 @@ def fig4_ensemble() -> None:
     ax.set_title("(c) Remove one member")
     fig.suptitle("Diverse views of the video, and each one earns its place", fontsize=22, fontweight="bold", y=1.02)
     fig.text(0.5, -0.03, "(a) CV-chosen weights per subject (sum = 1). (b) Correlation of the members' test similarity scores, mean over 6 subjects, recomputed from saved "
-             "matrices (within 0.02 of M27). (c) Change in leave-one-subject-out CV of the 7-member ensemble.", ha="center", fontsize=12, color=MUTED)
+             "matrices (within 0.02 of M27). (c) Change in leave-one-fold-out CV (training data only) of the 7-member ensemble.", ha="center", fontsize=12, color=MUTED)
     fig.tight_layout()
     save(fig, "fig4_ensemble_anatomy")
 
