@@ -7,6 +7,7 @@ Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con:FEATURES:CONFIG[
     decw        decoder with noise-whitened EEG input (``eegmr.decoding.DecodingVariant``)
     enc         encoder, plain correlation matching
     enc_noise   encoder, per-timepoint noise whitening + negative squared distance (``eegmr.matching``)
+    zs          zero-shot ridge trained on THINGS-EEG2 (``scripts/things_step0.py``), applied without fitting on our data
     con         linear InfoNCE head on the whitened-decoder input (``eegmr.contrastive``); CONFIG is one of
                 ``warm | linear | two_tower_d256`` (the ``selected`` grid of scripts/train_contrastive.py). The member's
                 similarity is the mean of row-z similarities over ``--con-seeds`` SGD seeds (0, 1, ...), in the CV folds
@@ -56,7 +57,7 @@ from eegmr.matching import Matcher, nested_fold_similarities, oof_predictions
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
-HEADS = ("dec", "decw", "enc", "enc_noise", "con")
+HEADS = ("dec", "decw", "enc", "enc_noise", "con", "zs")
 N_CANDIDATES = 102  # test set size: 1 target + 101 distractors
 STEPS = 10  # weights are multiples of 1 / STEPS
 TIE = 5e-4  # a simpler strategy within this much of the best leave-one-fold-out score is preferred
@@ -143,6 +144,8 @@ def encoder_matcher(head: str, window: slice) -> Matcher:
 
 def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slice) -> tuple[float | None, float | None]:
     """``(decoder alpha, encoder alpha)`` for this member (None where unused), chosen on the full training set."""
+    if m.head == "zs":
+        return None, None
     enc = encoder_alpha(features, eeg, window) if m.head != "dec" else None
     dec = decoder_alpha(features, eeg, enc, window, m.head) if m.head in ("dec", "decw", "con") else None
     return dec, enc
@@ -152,6 +155,10 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
                              folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3)) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
     dec_alpha, enc_alpha = alphas
+    if m.head == "zs":
+        from things_step0 import zero_shot_similarity
+
+        return [zero_shot_similarity(eeg[trn], eeg[val], features[trn], features[val], window) for trn, val in folds]
     if m.head in ("enc", "enc_noise"):
         sims = nested_fold_similarities(features, eeg, enc_alpha, encoder_matcher(m.head, window))
         return [sim for _, sim in sims]
@@ -166,6 +173,10 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
 def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: np.ndarray, eeg: np.ndarray,
                            measured: np.ndarray, window: slice, con_seeds: range = range(3)) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
+    if m.head == "zs":
+        from things_step0 import zero_shot_similarity
+
+        return zero_shot_similarity(eeg, measured, F_trn, F_tst, window)
     if m.head in ("enc", "enc_noise"):
         model = EncodingModel(alpha_selection="retrieval", window=window).fit(F_trn, eeg)
         matcher = encoder_matcher(m.head, window)

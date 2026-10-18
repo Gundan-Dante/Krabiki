@@ -306,6 +306,34 @@ old weights 0.1/0.6/0.3 with the new seeds 16.4 / 46.1 / 6.5 (vs the seeds 0-2 r
 So the weights are stable to within one step and the result does not depend on the seed set beyond the dev noise (about ±1 pt top-1); the old submission `ens_con_b_cv` stays valid.
 (`ensemble.py` gained `--con-seed-start` and `--ref-weights`.)
 
+## THINGS-EEG2 Step 0: zero-shot transfer from image-RSVP EEG (track-matching)
+**Setup.** External data: THINGS-EEG2 preprocessed 17-channel release (Gifford, Dwivedi, Roig, Cichy; NeuroImage 2022; OSF 3jk45 component anp5v, CC BY 4.0, `sub-01.zip`, `sub-02.zip`,
+uploaded 2022-08-12; images OSF y63gw, THINGS license: research use only), sha256 of every file verified against OSF. Files converted once in isolated mode (`python -I src/eegmr/external.py convert`,
+whitelisting unpickler) to plain float32 `.npz`. The release's stored channel order is exactly our organizer-given order (`Pz P3 P7 O1 Oz O2 P4 P8 P1 P5 PO7 PO3 POz PO4 PO8 P6 P2`).
+THINGS images embedded with the same `open_clip ViT-B-32 / laion2b_s34b_b79k` as our videos. Ridge (EEG 17 ch x 50-600 ms = 935 values, 40 Hz low-pass, z-scored) -> z-scored CLIP vector, fitted on THINGS sub-01+02 (132,320
+single trials), alpha by the held-out THINGS images. Sanity check on the 200 held-out THINGS images (200-way): single-trial top-1 3.4% / top-5 13% (chance 0.5% / 2.5%); 80-repetition average 8% / 29%.
+
+**Zero-shot on our EEG (no fitting on our data).** Pooled over all 6 subjects' training recordings (~5,400 trials; candidates = the subject's training videos; expected top-k of 102 by the hypergeometric rule), chance: percentile rank 0.5, top-1 0.98%, top-5 4.9%:
+
+| Variant (our side) | pct rank | E[top-1] | E[top-5] | dev (sub-01..04) top-1 / top-5 / median |
+|---|---|---|---|---|
+| raw, no whitening | 0.451 | 1.6% | 7.4% | 0.7-1.0% / 5.6-6.1% / 41.5-42.1 |
+| noise-whitened (our decw whiteners) | 0.431 | 2.1% | 8.4% | 1.2% / 7.8% / 37.3 |
+| common-average reference, no whitening (**used for the member**) | **0.429** | 2.0% | 8.0% | 1.5% / 6.6% / 36.8 |
+| our own per-subject decw (for scale) | 0.232 | 6.8% | 24.2% | 14.7% / 42.2% / 7.5 |
+
+A weak but real shared signal (percentile rank 0.43 vs 0.5, about 17 standard errors on the pooled trials), but top-1 is only ~2x chance, and on the 408 dev trials top-1 is 0.7-2.2% (standard error 0.5 pts at chance),
+i.e. within noise of chance under the stated kill criterion (< ~2.5%). Dev top-5 (6-9%) and median rank (36-42 vs 51.5 at chance) show the same weak signal.
+
+**Use as an ensemble member** (`ensemble.py --member decw:clip_b32 --member zs:clip_b32`, nested-fold standardization, `results/ens_zs_cv.csv`): CV picks w = 0.8 / 0.2 (decw / zero-shot), LOFO (E1+E5)/2: decw alone 0.1550, equal 0.1219, global 0.1603, per-subject 0.1591.
+Dev: **14.5 / 40.7 / 7.9** vs decw alone 14.7 / 42.2 / 7.5 (better 150 / worse 152, p = 0.84). The CV gain (+0.005) does not show on dev.
+
+**Use as a shrinkage prior** (`things_step0.py prior`, ridge shrunk toward the THINGS solution, 5-fold training CV, `results/things_prior_cv.csv`; CAR input, no whitening, per-subject best alpha): mean CV percentile rank 0.2405 (no prior) -> 0.2393 (0.5 x W_THINGS) -> **0.2389** (1 x) -> 0.2411 (2 x);
+E[top-1] 5.95% -> 6.19%. Better on all 6 subjects at scale 1 (by 0.0004-0.0033) but tiny; the whitened decoder alone is at 0.232.
+
+**Verdict: NO-GO for neural pretraining on THINGS-EEG2 (Steps 1-2).** The linear transfer is real but too weak to matter (the shared signal is mostly early visual; the stimulus domain differs: 100 ms object images in a 5 Hz RSVP stream vs 3-s dynamic scenes with sound), and a stronger encoder would raise within-THINGS accuracy, not close the domain gap.
+Possible leftover, not run: restrict both sides to the first ~250 ms; more THINGS subjects (the linear fit is already data-saturated at 132k trials for 935 weights).
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
