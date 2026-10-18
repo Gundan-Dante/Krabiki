@@ -6,11 +6,12 @@ is about ±1.1 pts top-1 and ±1.9 pts top-5. Every model choice is made by **tr
 KFold seed 0, all 6 subjects). Dev only confirms, with a paired Wilcoxon on per-trial ranks. Per-model details:
 `MODEL_BACKLOG.md` (M0–M19). Orientation for agents: `CLAUDE.md`.
 
-## 1. Current best: v4 (2026-10-18 evening)
+## 1. Current best: v4b (FINAL, 2026-10-18 evening)
 
 | Set | Model | top-1 | top-5 | median | Status |
 |---|---|---|---|---|---|
-| **`submissions/final_v4_csls/`** | **v4 (M28):** 7 members: **subject-pooled** DINOv2-patch decoder (.2), V-JEPA 2 (.1), contrastive two-tower on CLIP (.1), AlexNet conv5 (.2), hand-crafted descriptors (.1), CLAP audio (.1), low-level AV per 100 ms "lowav" (.2); test centering; CSLS k=5 per member; global CV weights | **33.3%** | **68.9%** | **2.5** | **Headline.** LOFO 0.2819. Verified (rescore, files == saved matrices, pooling uses only other subjects' training data). |
+| **`submissions/final_v4b_csls/`** | **v4b (M28), FINAL:** as v4 but AlexNet conv5 and lowav are also subject-pooled; global weights .2/.1/.1/.2/.1/.1/.2 | **33.8%** | **68.1%** | **2.6** | **Final submission.** LOFO 0.2872 (v4a 0.2819, v3 0.2774); best training CV on sub-05 / sub-06 (pct rank 0.1439 / 0.1753 vs v4a 0.1463 / 0.1802, v3 0.1530 / 0.1809). v4c (all 6 decoders pooled) +0.0003, not adopted. |
+| `submissions/final_v4_csls/` | v4a (M28): 7 members: **subject-pooled** DINOv2-patch decoder (.2), V-JEPA 2 (.1), contrastive two-tower on CLIP (.1), AlexNet conv5 (.2), hand-crafted descriptors (.1), CLAP audio (.1), low-level AV per 100 ms "lowav" (.2); test centering; CSLS k=5 per member; global CV weights | 33.3% | 68.9% | 2.5 | previous headline. LOFO 0.2819. Verified (rescore, files == saved matrices, pooling uses only other subjects' training data). |
 | `submissions/final_v3_csls/` | v3 (M25): the same members without pooling, per-subject weights | 32.4% | 66.7% | 3.0 | previous headline; quick audit passed (rescore, shuffle control at chance) |
 | `submissions/final_v3_nocsls/` | v3 without centering / CSLS | 25.2% | 58.1% | 4.1 | backup |
 | `submissions/final_csls/` | M17 + block-8 + CSLS | 24.0% | 57.1% | 4.25 | earlier headline, full audit (AUDIT.md) |
