@@ -8,6 +8,7 @@ Example:
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 import numpy as np
@@ -23,14 +24,18 @@ def main() -> None:
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     p.add_argument("--feature-dir", type=Path, default=DEFAULT_FEATURE_DIR)
     p.add_argument("--device", default=None, help="cuda / cpu (default: cuda if available)")
+    p.add_argument("--workers", type=int, default=None,
+                   help="CPU worker processes (default: 6 for clap, min(16, cores) for lowlevel); the features do not depend on it")
     args = p.parse_args()
 
     if args.model == "lowlevel":
-        for out in extract_lowlevel_av(args.root, args.feature_dir):
+        for out in extract_lowlevel_av(args.root, args.feature_dir, workers=args.workers or min(16, os.cpu_count() or 8)):
             with np.load(out) as f:
                 print("wrote", out, "mean", f["mean"].shape, "frames", f["frames"].shape)
         return
     kwargs = {"device": args.device} if args.device else {}
+    if args.workers is not None:
+        kwargs["num_workers"] = args.workers
     out = extract_audio_features(args.model, args.root, args.feature_dir, **kwargs)
     with np.load(out) as f:
         no_audio = f["no_audio"]

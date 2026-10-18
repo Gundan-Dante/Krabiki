@@ -7,6 +7,8 @@ Pretrained models (all public, released well before Oct 16, 2026):
 
 from __future__ import annotations
 
+import contextlib
+import os
 from pathlib import Path
 from typing import Callable
 
@@ -16,6 +18,23 @@ import torch
 from tqdm import tqdm
 
 from eegmr.data import ALL_IDS, DEFAULT_ROOT, video_path
+
+@contextlib.contextmanager
+def single_threaded_workers():
+    """BLAS / OpenMP / numba threads of processes started inside the block are limited to 1 (a pool already runs one
+    process per core); the parent's environment is restored on exit."""
+    keys = ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMBA_NUM_THREADS")
+    saved = {k: os.environ.get(k) for k in keys}
+    os.environ.update(dict.fromkeys(keys, "1"))
+    try:
+        yield
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
 
 DEFAULT_FEATURE_DIR = Path("features")
 MAX_PER_FRAME_DIM = 4096  # per-frame features are cached only when they are this small
@@ -49,12 +68,15 @@ def _alexnet(device: str) -> Extractor:
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
 
+    def prepare(frames: list[np.ndarray]) -> torch.Tensor:  # CPU part, runs in the loader workers
+        return torch.from_numpy(np.stack([cv2.resize(f, (224, 224), interpolation=cv2.INTER_AREA) for f in frames]))
+
     @torch.no_grad()
-    def run(frames: list[np.ndarray]) -> np.ndarray:
-        x = np.stack([cv2.resize(f, (224, 224), interpolation=cv2.INTER_AREA) for f in frames])
-        x = torch.from_numpy(x).to(device).permute(0, 3, 1, 2).float() / 255.0
+    def run(x: torch.Tensor | list[np.ndarray]) -> np.ndarray:
+        x = (prepare(x) if isinstance(x, list) else x).to(device).permute(0, 3, 1, 2).float() / 255.0
         return net((x - mean) / std).flatten(1).cpu().numpy()
 
+    run.prepare = prepare
     return run
 
 
@@ -89,11 +111,15 @@ def _clip_b32(device: str) -> Extractor:
     model, preprocess = _clip_b32_model()
     model = model.eval().to(device)
 
+    def prepare(frames: list[np.ndarray]) -> torch.Tensor:  # CPU part (PIL resize + normalize), runs in the loader workers
+        return torch.stack([preprocess(Image.fromarray(f)) for f in frames])
+
     @torch.no_grad()
-    def run(frames: list[np.ndarray]) -> np.ndarray:
-        x = torch.stack([preprocess(Image.fromarray(f)) for f in frames]).to(device)
+    def run(x: torch.Tensor | list[np.ndarray]) -> np.ndarray:
+        x = (prepare(x) if isinstance(x, list) else x).to(device)
         return model.encode_image(x).float().cpu().numpy()
 
+    run.prepare = prepare
     return run
 
 
@@ -104,18 +130,40 @@ def feature_path(name: str, n_frames: int, feature_dir: Path = DEFAULT_FEATURE_D
     return Path(feature_dir) / f"{name}_f{n_frames}.npz"
 
 
+class _PreparedFrames(torch.utils.data.Dataset):
+    """``prepare(read_frames(video, n_frames))`` per video; DataLoader workers decode and preprocess in parallel."""
+
+    def __init__(self, ids: np.ndarray, root: Path, n_frames: int, prepare: Callable) -> None:
+        self.ids, self.root, self.n_frames, self.prepare = ids, root, n_frames, prepare
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, i: int):
+        if torch.utils.data.get_worker_info() is not None:
+            cv2.setNumThreads(1)
+            torch.set_num_threads(1)
+        return self.prepare(read_frames(video_path(int(self.ids[i]), self.root), self.n_frames))
+
+
 def extract_features(
     name: str,
     n_frames: int,
     root: Path = DEFAULT_ROOT,
     feature_dir: Path = DEFAULT_FEATURE_DIR,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    num_workers: int = 6,
 ) -> Path:
-    """Compute features for all 1,102 videos and cache ``ids``, ``mean`` and (if small) ``frames``."""
+    """Compute features for all 1,102 videos and cache ``ids``, ``mean`` and (if small) ``frames``.
+
+    Frame decoding and CPU preprocessing run in ``num_workers`` DataLoader workers (0 = in this process); the features
+    are the same for any worker count (the GPU sees one video's frames per batch, in video order)."""
     extractor = EXTRACTORS[name](device)
+    loader = torch.utils.data.DataLoader(_PreparedFrames(ALL_IDS, root, n_frames, extractor.prepare), batch_size=None,
+                                         num_workers=num_workers, prefetch_factor=4 if num_workers else None)
     means, per_frame = [], []
-    for vid in tqdm(ALL_IDS, desc=f"{name} f{n_frames}"):
-        feats = extractor(read_frames(video_path(int(vid), root), n_frames))
+    for batch in tqdm(loader, desc=f"{name} f{n_frames}", total=len(ALL_IDS)):
+        feats = extractor(batch)
         means.append(feats.mean(axis=0))
         if feats.shape[1] <= MAX_PER_FRAME_DIM:
             per_frame.append(feats.astype(np.float16))
@@ -294,15 +342,15 @@ def extract_all_frames(
 
 
 class _VideoSubset(_VideoFrames):
-    """Only the ``n_frames`` frames :func:`read_frames` would pick, uint8 ``(n, H, W, 3)``."""
+    """Only the ``n_frames`` frames :func:`read_frames` would pick, uint8 ``(n, H, W, 3)`` (only those are colour-converted)."""
 
     def __init__(self, ids: np.ndarray, root: Path, n_frames: int) -> None:
         super().__init__(ids, root)
         self.n_frames = n_frames
 
     def __getitem__(self, i: int) -> np.ndarray:
-        frames = super().__getitem__(i)
-        return frames[((np.arange(self.n_frames) + 0.5) * len(frames) / self.n_frames).astype(int)]
+        cv2.setNumThreads(1)
+        return np.stack(read_frames(video_path(int(self.ids[i]), self.root), self.n_frames))
 
 
 def extract_frame_subset(
@@ -311,18 +359,26 @@ def extract_frame_subset(
     root: Path = DEFAULT_ROOT,
     feature_dir: Path = DEFAULT_FEATURE_DIR,
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
-    num_workers: int = 3,
+    num_workers: int = 6,
+    batch_videos: int = 8,
 ) -> Path:
-    """GPU-embed only the ``n_frames`` frames of each video (``read_frames`` indices) and write ``<name>_all_f<n>.npz``
-    directly (the same file :func:`derive_frame_subset` would give, without embedding every frame)."""
+    """GPU-embed only the ``n_frames`` frames of each video (``read_frames`` indices) and write ``<name>_all_f<n>.npz``,
+    the same file :func:`derive_frame_subset` gives from an all-frames cache (``mean`` is the mean of the fp16-rounded
+    frames), at a fraction of the cost: ``n_frames`` instead of ~90 frames per video go through the network, ``batch_videos``
+    videos per GPU batch. The embeddings can differ from the all-frames ones by one fp16 unit in the last place (~1% of the
+    entries) because the GPU kernels are chosen by batch size."""
     encode = GPU_ENCODERS[name](device)
-    loader = torch.utils.data.DataLoader(_VideoSubset(ALL_IDS, root, n_frames), batch_size=None, num_workers=num_workers)
+    loader = torch.utils.data.DataLoader(_VideoSubset(ALL_IDS, root, n_frames), batch_size=batch_videos, num_workers=num_workers,
+                                         prefetch_factor=4 if num_workers else None)
     per_video = []
-    for frames in tqdm(loader, desc=f"{name} f{n_frames}"):
-        per_video.append(encode(frames.to(device).permute(0, 3, 1, 2).float() / 255.0).cpu().numpy())
-    picked = np.stack(per_video).astype(np.float16)
+    for frames in tqdm(loader, desc=f"{name} f{n_frames}"):  # (b, n, H, W, 3) uint8
+        b = frames.shape[0]
+        x = frames.flatten(0, 1).to(device).permute(0, 3, 1, 2).float() / 255.0
+        per_video.append(encode(x).cpu().numpy().reshape(b, n_frames, -1).astype(np.float16))
+    picked = np.concatenate(per_video)
     out = feature_path(f"{name}_all", n_frames, feature_dir)
-    np.savez(out, ids=ALL_IDS, mean=np.stack(per_video).mean(axis=1).astype(np.float32), frames=picked)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out, ids=ALL_IDS, mean=picked.astype(np.float32).mean(axis=1), frames=picked)
     return out
 
 

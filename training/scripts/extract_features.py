@@ -2,6 +2,7 @@
 
 Example:
     python scripts/extract_features.py --model clip_b32 --frames 1 8
+    python scripts/extract_features.py --model dinov2_b --subset-only --frames 8  # GPU, only the 8 sampled frames (fast)
     python scripts/extract_features.py --model dinov2_b --all-frames --frames 8   # GPU, every frame, then f8 subset
     python scripts/extract_features.py --model vjepa2_l --frames 16               # clip-level model, one pass per video
 """
@@ -27,9 +28,12 @@ def main() -> None:
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     p.add_argument("--feature-dir", type=Path, default=DEFAULT_FEATURE_DIR)
     p.add_argument("--device", default=None, help="cuda / cpu (default: cuda if available)")
+    p.add_argument("--workers", type=int, default=None, help="video decoding / preprocessing worker processes (default: per extractor)")
     args = p.parse_args()
 
     kwargs = {"device": args.device} if args.device else {}
+    if args.workers is not None:
+        kwargs["num_workers"] = args.workers
     if args.model in CLIP_ENCODERS:
         for n in args.frames:
             print("wrote", extract_clip_features(args.model, n, args.root, args.feature_dir, **kwargs))
@@ -37,6 +41,8 @@ def main() -> None:
     if args.subset_only:
         for n in args.frames:
             print("wrote", extract_frame_subset(args.model, n, args.root, args.feature_dir, **kwargs))
+            if args.model.startswith("dinov2"):
+                print("wrote", *split_dinov2(n, args.feature_dir, args.model))
         return
     if args.all_frames:
         print("wrote", extract_all_frames(args.model, args.root, args.feature_dir, **kwargs))

@@ -34,17 +34,22 @@ MEMBERS=(pdecw:dinov2_b_patch_all decw:vjepa2_l_all:16 con:clip_b32:two_tower_d2
 POOLED=(dinov2_b_patch_all:8 alexnet_c5p6:8 lowav_all:1)   # features of the subject-pooled members
 
 log() { echo "[$(date +%T)] $*"; }
+timed() { local n=$1 s=$SECONDS; shift; "$@"; log "extractor $n: $((SECONDS - s)) s"; }
 member_args() { for m in "$@"; do printf -- "--member\n%s\n" "$m"; done; }
 
-stage_features() {  # frozen public models + hand-crafted descriptors, one cache per feature set (GPU, ~1 h)
+stage_features() {  # frozen public models + hand-crafted descriptors, one cache per feature set (GPU, ~10 min)
   log "features -> $FEATURES"
-  $PY "$HERE/scripts/extract_features.py" --model clip_b32 --frames 8 "${IO[@]}"            # contrastive head targets
-  $PY "$HERE/scripts/extract_features.py" --model dinov2_b --all-frames --frames 8 "${IO[@]}" # -> dinov2_b_patch_all_f8
-  $PY "$HERE/scripts/extract_features.py" --model vjepa2_l --frames 16 "${IO[@]}"            # -> vjepa2_l_all_f16
-  $PY "$HERE/scripts/lowlevel_features.py" alexnet-layers --layers c5 --pool 6 "${IO[@]}"     # -> alexnet_c5p6_f8
-  $PY "$HERE/scripts/lowlevel_features.py" descriptors "${IO[@]}"                              # -> lowlevel_all_f1
-  $PY "$HERE/scripts/extract_audio.py" --model clap "${IO[@]}"                                 # -> clap_all_f1
-  $PY "$HERE/scripts/extract_audio.py" --model lowlevel "${IO[@]}"                             # -> lowav_all_f1
+  # The CPU-only extractors (Farneback flow / spectral descriptors, low-level audio-visual) run in the background while
+  # the GPU extractors use the GPU; each is also parallel inside (video decoding / one video per worker).
+  ( timed descriptors $PY "$HERE/scripts/lowlevel_features.py" descriptors "${IO[@]}"            # -> lowlevel_all_f1
+    timed lowav $PY "$HERE/scripts/extract_audio.py" --model lowlevel "${IO[@]}" ) &             # -> lowav_all_f1
+  local cpu_jobs=$!
+  timed vjepa2_l $PY "$HERE/scripts/extract_features.py" --model vjepa2_l --frames 16 "${IO[@]}"          # -> vjepa2_l_all_f16 (longest)
+  timed dinov2_b $PY "$HERE/scripts/extract_features.py" --model dinov2_b --subset-only --frames 8 "${IO[@]}" # -> dinov2_b_patch_all_f8
+  timed clip_b32 $PY "$HERE/scripts/extract_features.py" --model clip_b32 --frames 8 "${IO[@]}"          # contrastive head targets
+  timed alexnet_c5 $PY "$HERE/scripts/lowlevel_features.py" alexnet-layers --layers c5 --pool 6 "${IO[@]}" # -> alexnet_c5p6_f8
+  timed clap $PY "$HERE/scripts/extract_audio.py" --model clap "${IO[@]}"                                  # -> clap_all_f1
+  wait "$cpu_jobs"
 }
 
 stage_decw() {  # per-subject decoder alphas (and CV fold matrices) of the features that get pooled

@@ -107,7 +107,10 @@ def run_fp16(args: argparse.Namespace, rest: list[str]) -> None:
     from eegmr.decoding import DecodingVariant
     from eegmr.evaluate import true_ranks
     from eegmr.features import extract_clip_features, load_features
-    from predict import preprocess
+    try:  # new layout: eegmr.data.preprocess; commits before the restructuring: scripts/predict.py
+        from eegmr.data import preprocess
+    except ImportError:
+        from predict import preprocess
 
     p = argparse.ArgumentParser()
     p.add_argument("--root", type=Path, default=DEFAULT_ROOT)

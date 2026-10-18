@@ -22,7 +22,7 @@ import torch
 from tqdm import tqdm
 
 from eegmr.data import ALL_IDS, DEFAULT_ROOT, video_path
-from eegmr.features import DEFAULT_FEATURE_DIR, feature_path, read_frames
+from eegmr.features import DEFAULT_FEATURE_DIR, feature_path, read_frames, single_threaded_workers
 
 ALEX_TAPS = {"c1": 0, "c2": 3, "c3": 6, "c4": 8, "c5": 10}  # indices of the conv layers in torchvision AlexNet.features
 GROUPS = ("color", "freq", "edge", "motion")
@@ -43,10 +43,29 @@ def pool_cached_alexnet_conv2(pool: int, n_frames: int = 8, feature_dir: Path = 
     return out
 
 
+class _ResizedFrames(torch.utils.data.Dataset):
+    """The ``n_frames`` frames of a video (``features.read_frames``), area-resized to 224 x 224, uint8 ``(n, 224, 224, 3)``."""
+
+    def __init__(self, ids: np.ndarray, root: Path, n_frames: int) -> None:
+        self.ids, self.root, self.n_frames = ids, root, n_frames
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, i: int) -> torch.Tensor:
+        if torch.utils.data.get_worker_info() is not None:
+            cv2.setNumThreads(1)
+        frames = read_frames(video_path(int(self.ids[i]), self.root), self.n_frames)
+        return torch.from_numpy(np.stack([cv2.resize(f, (224, 224), interpolation=cv2.INTER_AREA) for f in frames]))
+
+
 def extract_alexnet_layers(layers: list[str], pool: int, n_frames: int = 8, root: Path = DEFAULT_ROOT,
                            feature_dir: Path = DEFAULT_FEATURE_DIR,
-                           device: str = "cuda" if torch.cuda.is_available() else "cpu") -> list[Path]:
-    """Extract ``alexnet_<layer>p<pool>_f<n>`` for conv layers such as ``["c1", "c3", "c4", "c5"]`` (one pass over the videos)."""
+                           device: str = "cuda" if torch.cuda.is_available() else "cpu", num_workers: int = 6) -> list[Path]:
+    """Extract ``alexnet_<layer>p<pool>_f<n>`` for conv layers such as ``["c1", "c3", "c4", "c5"]`` (one pass over the videos).
+
+    Decoding and resizing run in ``num_workers`` DataLoader workers; the GPU sees one video's frames per batch, so the
+    features do not depend on the worker count."""
     from torchvision.models import AlexNet_Weights, alexnet
 
     net = alexnet(weights=AlexNet_Weights.IMAGENET1K_V1).features.eval().to(device)
@@ -55,11 +74,11 @@ def extract_alexnet_layers(layers: list[str], pool: int, n_frames: int = 8, root
     mean = torch.tensor([0.485, 0.456, 0.406], device=device).view(1, 3, 1, 1)
     std = torch.tensor([0.229, 0.224, 0.225], device=device).view(1, 3, 1, 1)
     out: dict[str, list[np.ndarray]] = {name: [] for name in layers}
+    loader = torch.utils.data.DataLoader(_ResizedFrames(ALL_IDS, root, n_frames), batch_size=None, num_workers=num_workers,
+                                         prefetch_factor=4 if num_workers else None)
     with torch.no_grad():
-        for vid in tqdm(ALL_IDS, desc="alexnet layers"):
-            frames = read_frames(video_path(int(vid), root), n_frames)
-            x = np.stack([cv2.resize(f, (224, 224), interpolation=cv2.INTER_AREA) for f in frames])
-            h = (torch.from_numpy(x).to(device).permute(0, 3, 1, 2).float() / 255.0 - mean) / std
+        for x in tqdm(loader, desc="alexnet layers", total=len(ALL_IDS)):
+            h = (x.to(device).permute(0, 3, 1, 2).float() / 255.0 - mean) / std
             for i, layer in enumerate(net):
                 h = layer(h)
                 if i in taps:
@@ -168,10 +187,12 @@ def _describe(args: tuple[int, Path]) -> dict[str, np.ndarray]:
 
 
 def extract_descriptors(root: Path = DEFAULT_ROOT, feature_dir: Path = DEFAULT_FEATURE_DIR, workers: int = 8) -> list[Path]:
-    """Cache ``lowlevel_{color,freq,edge,motion}_f1`` and ``lowlevel_all_f1`` (the groups concatenated) for all 1,102 videos."""
+    """Cache ``lowlevel_{color,freq,edge,motion}_f1`` and ``lowlevel_all_f1`` (the groups concatenated) for all 1,102 videos.
+
+    One video per task, so the result does not depend on ``workers``."""
     from multiprocessing import get_context
 
-    with get_context("spawn").Pool(workers) as pool:
+    with single_threaded_workers(), get_context("spawn").Pool(workers) as pool:
         rows = list(tqdm(pool.imap(_describe, [(int(v), root) for v in ALL_IDS], chunksize=8), total=len(ALL_IDS),
                          desc="descriptors"))
     paths = []

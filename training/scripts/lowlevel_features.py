@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from eegmr.data import DEFAULT_ROOT
@@ -27,14 +28,17 @@ def main() -> None:
     for s in (a, b, sub.choices["descriptors"]):
         s.add_argument("--root", type=Path, default=DEFAULT_ROOT)
         s.add_argument("--feature-dir", type=Path, default=DEFAULT_FEATURE_DIR)
+    b.add_argument("--workers", type=int, default=6, help="video decoding worker processes (the GPU sees the same batches)")
+    sub.choices["descriptors"].add_argument("--workers", type=int, default=min(16, os.cpu_count() or 8),
+                                            help="CPU worker processes (one video per task; any count gives the same features)")
     args = p.parse_args()
     if args.cmd == "alexnet-pool":
         for k in args.pool:
             print("wrote", pool_cached_alexnet_conv2(k, 8, args.feature_dir))
     elif args.cmd == "alexnet-layers":
-        print("wrote", *extract_alexnet_layers(args.layers, args.pool, 8, args.root, args.feature_dir))
+        print("wrote", *extract_alexnet_layers(args.layers, args.pool, 8, args.root, args.feature_dir, num_workers=args.workers))
     else:
-        print("wrote", *extract_descriptors(args.root, args.feature_dir))
+        print("wrote", *extract_descriptors(args.root, args.feature_dir, args.workers))
 
 
 if __name__ == "__main__":
