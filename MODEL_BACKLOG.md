@@ -162,7 +162,7 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 | Subject pooling (hierarchical: shrink each subject toward the group solution) | medium–high | Also enables a group-model fallback for unseen subjects. Test leave-one-subject-out |
 | Decoding with per-dimension reliability weights | done → M8 (not adopted) | Decoding analogue of M5 #2 |
 | Reduced-rank regression / CCA | medium | Shared low-dim subspace. Still linear and fast |
-| Linear contrastive head (InfoNCE on frozen features) | medium–high | Optimizes ranking directly. Smallest step toward Stage 3 |
+| Linear contrastive head (InfoNCE on frozen features) | done → M12 (ensemble member, not a replacement) | Optimizes ranking directly. Smallest step toward Stage 3 |
 | **EEGNet / ATM-style contrastive EEG encoder (Stage 3)**: *perspective plan, after the feature upgrades* | high ceiling, costly, uncertain | Small CNN on raw EEG (17 × T), symmetric InfoNCE against frozen video features (CLIP / DINOv2), learnable temperature. **Data is the bottleneck:** ~970 trials per subject is little for a network, so it likely needs subject pooling (~5,500 trials, currently paused by the user) to beat ridge decoding. Plan when picked up: per-subject normalization plus a subject embedding, heavy regularization (dropout, ±20 ms shift, channel dropout, noise), early stopping on 10% held-out training videos. Compare against M3 at equal features. Possible ensemble member even if it doesn't win alone. |
 | Kernel ridge (RBF) | low–medium | Cheap test of whether nonlinearity helps |
 | CSLS on decoding similarities | low–medium | Was not significant on encoding |
@@ -171,3 +171,92 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 | Object-detector outputs (e.g. RF-DETR class counts) | low–medium, interpretable | RF-DETR is a detector with a DINOv2 backbone, not a diffusion model. Use its outputs, not its features |
 | Diffusion-model features (e.g. Stable Diffusion UNet) | low | Used for reconstruction in the literature, rarely better than CLIP for retrieval |
 | Time-resolved decoding (sliding 100 ms windows), channel importance | report figures (§8) | Cheap with the GPU helper |
+
+## M9: Encoder alpha under Euclid; CV-weighted ensemble of the whitened decoder (M8a) and the noise-Euclid encoder (M5) (krabiki-51, branch `track-matching`)
+- **Code:** `scripts/sweep_alpha_euclid.py` → `results/alpha_euclid_cv.csv`; `scripts/ensemble.py` →
+  `results/ensemble_cv_decw.csv` (whitened decoder, headline) and `results/ensemble_cv_dec.csv` (raw decoder, secondary);
+  `matching.nested_fold_similarities`.
+- **(a) Alpha re-tuning under Euclid: null.** Nested train-CV over a half-decade grid: Euclid's optimum is the same interior point as
+  the correlation optimum (1e4 for sub-01..04, one grid step off for sub-05/06). Re-tuning gains ≤ 0.0047 CV (sub-05), 0 on four subjects.
+  The encoder alpha stays as chosen by plain-correlation retrieval CV.
+- **(b) Ensemble** S = w·z(dec) + (1−w)·z(enc), w on a 0…1 grid (step 0.1), chosen by train-CV with out-of-fold similarity matrices
+  (same KFold seed 0; whiteners and matcher re-estimated per outer fold). Criteria: mean percentile rank, expected top-1 and top-5 of 102
+  (hypergeometric), picked by their mean. Same-fold numbers of krabiki-e1 reproduced.
+- **Whitened decoder: the CV picks w = 1.0 (decoder alone)** (global avg criterion 15.5% at w = 1.0 and 0.9 vs 14.1% at 0.5; percentile
+  rank 0.2319 at w = 1 vs 0.2487 at w = 0.5). Per-subject w: 0.8 / 1 / 1 / 1 / 0.7 / 1. Leave-one-fold-out: dec only 0.1550, global 0.1547,
+  per-subject 0.1553, equal 0.1411. Equal weight on dev: 13.2 / 41.7 / 7.8 vs decoder 14.7 / 42.2 / 7.5 (p = 0.46). Per-subject blend:
+  13.7 / 42.6 / 7.4 (p = 0.013, changes only sub-01: top-1 17.6 → 13.7, top-5 46.1 → 48.0).
+- **Raw decoder (secondary):** CV picks global w = 0.7; dev 13.0 / 40.7 / 8.0 vs 14.0 / 36.0 / 8.25 (better 192 / worse 121, p = 7e-8).
+- **Verdict:** the ensemble gain (M7) disappears once the decoder input is noise-whitened (M8a). The encoder is no longer a useful ensemble
+  member for CLIP B-32 features; keep the whitened decoder alone as the headline. Submission files exist for the CV-best blend
+  (`submissions/ens_decw_encnoise_subject/`, sub-06 identical to `decw`, sub-05 w = 0.7) but the evidence for preferring them is within noise.
+- **Next:** an ensemble may help again with a different feature space (DINOv2, CLIP L-14) as the second member; reuse `ensemble.py` with two decoders.
+
+## M10: DINOv2-B decoders (krabiki-e1, branch `track-dinov2`, commit 3da7561)
+- **Features:** timm `vit_base_patch14_dinov2.lvd142m` (DINOv2 ViT-B/14, 2023) at 224 px on every frame (24 min on GPU),
+  mean over 8 frames. Two descriptors per frame: CLS token and mean of the 256 patch tokens (768-d each).
+  Representational similarity with CLIP B-32 (Spearman over video pairs): CLS 0.57, patch 0.72.
+- **Whitened decoder (M8a recipe), dev top-1 / top-5 / mean-of-medians, train-CV mean over 6 subjects:**
+  CLIP B-32 14.7 / 42.2 / 7.5 (CV 0.232) | **DINOv2 patch 13.0 / 41.7 / 7.5 (CV 0.224; better than CLIP on 5 of 6
+  subjects, tie on sub-03)** | DINOv2 CLS 10.8 / 34.3 / 11.9 (CV 0.263) | CLS + patch concat 12.0 / 39.5 / 8.4.
+  Patch vs CLIP paired: 169 / 191, p = 0.86 (equivalent).
+- **Diagnostic equal-weight ensemble (row-z), not tuned:** CLIP + patch **15.2 / 45.3 / 7.25**, vs CLIP alone better 179 /
+  worse 140, p = 0.0024. CLIP + CLS 12.3 / 39.7 (no gain).
+- **Status:** CLIP + DINOv2-patch is the lead candidate for the final pipeline. Weights are to be chosen by train-CV with
+  krabiki-51's N-member ensemble tool.
+- **Reproduce:** `cd /home/kparpie/Krabiki-dinov2 && PYTHONPATH=src python scripts/extract_features.py --model dinov2_b
+  --all-frames --frames 8`, then `scripts/predict.py --head decoding --dec-whiten --features dinov2_b_patch_all --frames 8
+  --max-seconds 1.5 --alpha-selection retrieval`.
+
+## M11: N-member CV-weighted ensemble, CLIP + DINOv2 decoders (krabiki-51, branch `track-matching`)
+- **Code:** `scripts/ensemble.py` (generalised to N members: `--member HEAD:FEATURES[:FRAMES]`, HEAD in dec|decw|enc|enc_noise; simplex weights step 0.1,
+  exhaustive N ≤ 3, coordinate ascent N > 3; LOFO rule for best-single / equal / global / per-subject), `compare_matching.compare_table`.
+  CV tables: `results/ens_clip_patch_cv.csv`, `ens_clip_patch_enc_cv.csv`, `ens_4way_cv.csv`.
+- **Result:** DINOv2-patch **adds** to CLIP. CV-chosen weights 0.5 / 0.5 (CLIP decw / DINOv2-patch decw); the DINOv2-CLS decoder and the CLIP encoder get weight 0
+  in the 3- and 4-member searches. LOFO (E1+E5)/2: CLIP 0.155, patch 0.161, CLIP + patch 0.172 (per-subject weights 0.171, no gain).
+- **Dev:** 15.2 / 45.3 / 7.2 vs CLIP decw alone 14.7 / 42.2 / 7.5 (better 179 / worse 140, p = 0.0024); vs patch alone 13.0 / 41.7 / 7.5 (p = 0.0007).
+- **Caveat:** equal-weight CLIP + patch + encoder gets 17.9 / 44.6 on dev (diagnostic) but the CV rejects it (LOFO 0.164 vs 0.172); not used.
+- **Submissions:** `submissions/ens_clip_patch_cv/` (local, sub-05/06), the CV-best combo. Candidate headline pending krabiki-e1's decision.
+- **Next:** more diverse members (CLIP L-14, other layers/frames, DINOv2 with different pooling) now have a cheap test: add `--member` and read the CV weights.
+
+---
+
+## M12: Linear contrastive heads (InfoNCE on frozen features) (krabiki-2f): no gain alone, a useful ensemble member
+- **Code:** `src/eegmr/contrastive.py`, `scripts/train_contrastive.py` (`--mode cv|dev`, `--grid main|selected|strong_wd`,
+  `--ensemble-weights`, `--ens-weight`, `--device`), `tests/test_contrastive.py`. Perspective and prior:
+  `CONTRASTIVE_AUDIT.md`. Results: `results/contrastive_cv_*.csv`, `results/contrastive_dev_*.csv`.
+- **Setup:** inputs identical to M8a (EEG 5:60, 1.5 s crop, per-timepoint noise-whitened, standardized, 935-d; frozen
+  standardized video features). Heads: **A** linear W (935 → D) + cosine; **B** two towers (935 → d, D → d), d ∈ {64,
+  128, 256}; **C** A warm-started at the M8a ridge solution, with decay toward ridge or toward 0. Loss is symmetric
+  InfoNCE with learnable τ (init 0.07, clamped to [0.01, 1]), full-batch AdamW. Training is two-phase: early stopping on
+  an inner 15% of training videos (step 0 counts as a candidate; the warm start's ridge is fitted on the 85% only),
+  then retraining on all training videos for the chosen number of steps. Selection uses the shared outer 5-fold
+  train-CV (seed 0) with whiteners re-estimated per fold; the ridge reference on the same folds equals M8a's CV exactly.
+- **Train-CV, CLIP B-32 (mean of 6 subjects; ridge = M8a 0.2319):** C warm 0.2330–0.2349 (early stopping keeps the
+  ridge solution: mean 0.3–4 steps) | A linear 0.2479 at best (lr 1e-3; worse on 6/6 subjects; stops after 16–65
+  steps) | B two-tower 0.2716 / 0.2832 / 0.3091 for d = 256 / 128 / 64. Weight decay in {1e-4, 1e-3, 1e-2} has no
+  effect (training stops before decoupled decay acts), and strong decay {0.1, 1, 10} doesn't help either (0.248–0.249).
+- **Dev, single head vs M8a CLIP decw (14.7 / 42.2 / 7.5), 3 seeds:** C is identical to M8a (0 steps, bit-identical
+  ranks). A gives 15.6 ± 1.5 / 45.0 ± 1.1 / 7.6, not significant (p = 0.35–0.87); CV said worse, so this is a second
+  CV/dev disagreement, this time with CV the conservative side. B gives 14.3 ± 2.3 / 40.8 ± 1.5 / 8.2 (p 0.13–0.17).
+- **As ensemble member** (w·rowz(M8a) + (1−w)·rowz(head), same features). **Train-CV picks w = 0.75** for both heads
+  (CLIP: two-tower 0.2290, better on 5/6 subjects; linear 0.2306, 4/6; vs 0.2319). Dev at w = 0.75, 3 seeds:
+
+| Ensemble (w_M8a = 0.75) | top-1 | top-5 | paired vs M8a (per seed) |
+|---|---|---|---|
+| CLIP decw + CLIP two-tower d256 | **15.9 ± 1.1** | **45.5 ± 0.5** | p = 1.6e-6 / 3.4e-7 / 2.5e-7 |
+| CLIP decw + CLIP linear | 15.2 ± 0.6 | 43.4 ± 0.9 | p = 3.2e-4 / 1.9e-4 / 1.5e-4 |
+| DINOv2 decw (13.0 / 41.7) + DINOv2 linear | 13.4 ± 0.7 | 43.6 ± 0.9 | p = 2.1e-3 / 1.2e-4 / 7.9e-3 |
+| DINOv2 decw + DINOv2 two-tower d256 | 13.6 ± 0.9 | 43.0 ± 1.5 | p = 1.2e-2 / 1.3e-4 / 7.1e-4 |
+
+  DINOv2 train-CV: ridge 0.2239, ensemble w = 0.75 linear 0.2228 / two-tower 0.2230 (both better on 5/6 subjects).
+- **Verdict:** the contrastive head is **not a replacement** for ridge decoding at this data scale. Warm start converges
+  to ridge, and from scratch it overfits within tens of steps. It is a **cheap ensemble member**: weak alone, but it
+  errs differently from ridge. CLIP decw + CLIP two-tower reaches about the level of M11 (CLIP + DINOv2 decw, 15.2 / 45.3)
+  using one feature space. The CV gain is small (about 0.003, versus 0.023 for noise whitening) while dev p-values are
+  strong, so weights should come from 51's N-member CV tool before adoption. SGD variance is real (single-head top-1
+  std up to 2.3 pts), so ensemble members need 3 seeds or seed-averaging.
+- **Next:** add a `con:<features>:<config>` member type to krabiki-51's `ensemble.py` (OOF similarities per outer fold
+  are already produced inside `contrastive.cv_scores`). Test CLIP-decw + DINOv2-decw + CLIP two-tower (+ DINOv2 linear)
+  by CV, and consider averaging 3 seeds per contrastive member to cut SGD variance. Runtime about 10 s per subject per
+  head on GPU (two-phase training).
