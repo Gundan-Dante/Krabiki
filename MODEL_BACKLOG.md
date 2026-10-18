@@ -377,3 +377,49 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   drop extra windows, L-14, jitter, per-feature rescaling and encoder centering.
 - **Reproduce:** `python scripts/zero_cost.py run --features clip_b32 --frames 8 --specs base eeg_center ... && python scripts/zero_cost.py report --specs base eeg_center base@csls10 eeg_center@csls10`;
   `blend --ref clip_b32:8:base dinov2_b_patch_all:8:base --members clip_b32:8:eeg_center dinov2_b_patch_all:8:eeg_center vjepa2_l_all:16:eeg_center --csls 10`. Features: `extract_features.py --model clip_l14 --subset-only --frames 8` (and `clip_b32_mid8`).
+
+---
+
+## M14: Stage 3 feasibility, nonlinear EEG encoders with InfoNCE, per subject (krabiki-2f): viable as an ensemble member only, data-limited
+- **Code:** `src/eegmr/stage3.py` (linear / MLP / residual MLP / braindecode EEGNet / ShallowFBCSPNet encoders, symmetric
+  InfoNCE with learnable τ, optional augmentation, two-phase training as in M12, train-CV with per-fold whiteners and a
+  `train_fraction` option), `scripts/train_stage3.py` (`--mode cv|dev|curve`), `tests/test_stage3.py`, and an **`s3:` member
+  type in `scripts/ensemble.py`** (config's own window, per-fold whiteners, inner-split early stopping, 3-seed row-z mean,
+  honors `--center-test`). Results: `results/stage3_{cv_rung1,cv_rung2,cv_conv,cv_windowctrl,curve,dev}_clip_b32.csv`,
+  `results/ens_vj_b_s3_cv.csv`. Inputs are those of M8a/M12 (whitened, standardized EEG; frozen standardized CLIP B-32 f8).
+- **Ladder (train-CV, mean of 6 subjects; ridge = M8a 0.2319; ens = 0.75·rowz(M8a) + 0.25·rowz(model)):**
+
+| Rung | Model | alone | as 0.25 member | n subjects better than ridge (member) |
+|---|---|---|---|---|
+| 0 | linear InfoNCE (reference) | 0.2449 | 0.2302 | 5 |
+| 1 | MLP 935→512→D, GELU, dropout 0.5 | 0.2429 | 0.2283 | 6 |
+| 1 | residual MLP | 0.2434 | 0.2295 | 5 |
+| 2 | **EEGNet** (18k params, 0–800 ms) | 0.2926 | **0.2240** | **6** |
+| 2 | EEGNet 0–600 ms | 0.3064 | 0.2272 | 6 |
+| 2 | ShallowFBCSPNet | 0.4532 (≈ chance) | 0.2356 | 0 |
+| 3 | EEGNet + augmentation (±20 ms shift, channel dropout 0.1, noise 0.1) | 0.2981 | 0.2249 | 6 |
+| ctrl | linear / MLP on the same 0–800 ms window | 0.2611 / 0.2555 | 0.2305 / 0.2291 | 4 / 6 |
+
+  Nonlinearity on the M12 input adds nothing (MLP ≈ linear). Shallow's square-log-pool power features discard the evoked
+  waveform. Augmentation slightly hurts. The window control shows that EEGNet's member value comes from the conv
+  architecture, not the longer window. Rung 4 (ATM-style) was skipped because rung 2 is far from ridge alone.
+- **Dev, 3 seeds, vs M8a CLIP decw (14.7 / 42.2):** EEGNet alone 10.0 ± 0.4 / 30.2 ± 1.6 (worse, p ≤ 8e-7). **0.75 M8a +
+  0.25 EEGNet: 15.5 ± 0.2 / 45.2 ± 1.4** (p = 3e-8 / 1e-5 / 5e-4). With the M12 two-tower (0.6 / 0.2 / 0.2): 16.4 ± 0.9 /
+  45.8 ± 0.7. MLP512 alone 15.7 ± 1.1 / 44.6 ± 0.9 (p = 0.01 / 0.09 / 0.12; CV said worse, the same CV/dev split as M12's
+  linear head).
+- **In the full CV-weighted ensemble (M17b members + s3 EEGNet, exhaustive search, no CSLS / centering):** LOFO
+  per-subject 0.19578, global 0.1936, equal 0.19319 (M17b: global 0.19243). EEGNet gets weight 0.1–0.4 per subject (global
+  0.2; highest on sub-06, the weakest subject, where it has the best E[top-1] of all members). CV-chosen (per-subject)
+  dev **18.1 / 50.2 / 5.4** vs M17b 20.8 / 48.0 / 6.2: better on 143 trials / worse on 96, **p = 3e-5**. Top-5 +2.2, top-1
+  −2.7 (11 trials). Global weights 19.1 / 47.1 (p = 0.16); equal 19.1 / 50.5 (p = 0.015). Sub-05/06 files:
+  `submissions/ens_vj_b_s3_cv/` (local, validated).
+- **Learning curves (train-CV on 50 / 75 / 100% of each outer training part):** ridge 0.275 / 0.249 / 0.232; EEGNet alone
+  0.356 / 0.320 / 0.292 (gap to ridge 0.081 → 0.071 → 0.061, about −0.02 per doubling of data); EEGNet member gain over ridge
+  −0.001 / +0.0045 / +0.008 (grows with data); linear / MLP gap to ridge 0.022 → 0.015 → 0.013 / 0.020 → 0.016 → 0.011.
+- **Verdict:** **viable as an ensemble member, not as a standalone model at this data scale.** A tiny EEGNet adds
+  complementary information (temporal filtering of the evoked response) that the linear decoders miss, and the
+  effect is consistent across subjects, seeds and the CV/dev split. Standalone it is far behind ridge and **clearly
+  data-limited**. A naive extrapolation of the gap (−0.02 per doubling) needs roughly 8× the per-subject trials to reach
+  ridge, which only subject pooling (about 5.6k trials) or external pretraining could approach. **Pooling is the
+  missing ingredient**, and it's paused by the user. Not done: the DINOv2 repeat, and `s3` combined with `--center-test`
+  in the final grid (krabiki-51 will rerun the selection with s3 in the member set).
