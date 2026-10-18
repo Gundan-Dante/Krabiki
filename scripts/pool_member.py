@@ -127,6 +127,19 @@ def main() -> None:
         a0 = float(DEFAULT_ALPHAS[score[0].argmin()])
         if t == 1:  # lam = 0 of the pooled code is decw: same alpha choice and (numerically) the same predictions
             assert np.isclose(a0, st["dec_alpha"]), f"lam=0 alpha {a0} != decw alpha {st['dec_alpha']}"
+            with np.load(key(1, "cv", "decw")) as z:  # the decw member's cached, centered fold-0 matrix
+                ref = z["f0"]
+            parts = fold_parts[0]
+            w = torch.ones(len(parts["Xt"]), dtype=torch.float64, device=DEV)
+            e_val = center_like(st["eeg"][parts["val"]], st["eeg"][parts["trn"]])
+            Xv = (decoder_input(e_val, WINDOW, parts["Wf"], DEV) - parts["mu"]) / parts["sd"]
+            mine = cosine(pooled_predict(parts["Xt"], parts["Yt"], w, Xv, [st["dec_alpha"]])[0], parts["C"]).cpu().numpy()
+            diff = float(np.abs(mine - ref).max())
+            same_rank = float((np.argsort(-mine, 1) == np.argsort(-ref, 1)).all(1).mean())
+            assert diff < 1e-4, f"pooled(lam=0) vs cached decw fold 0: max abs diff {diff}"
+            report["lam0_vs_decw"] = {"max_abs_diff": diff, "rank_identical_rows": same_rank}
+            print(f"{a.features} lam=0 check (sub-01 fold 0 vs cached decw): max abs diff {diff:.2e}, "
+                  f"rank-identical rows {same_rank:.3f}", flush=True)
         # cache fold similarities (center-test on the held-out fold, as ensemble.py --center-test)
         fsims = []
         for parts in fold_parts:
