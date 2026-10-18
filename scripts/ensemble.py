@@ -24,9 +24,9 @@ and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, def
    chosen on the full training set by CV. For a weight vector the criteria are the mean percentile rank, the expected
    top-1 and the expected top-5 of 102 candidates (hypergeometric: the exact chance of the true video being in the top k
    if 101 distractors were drawn from the fold).
-2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 5 (at most 1001
+2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 7 (at most 8008
    points; the earlier greedy search used for N = 4 could stop in a local optimum), by steepest-ascent pair transfers (0.1
-   from one member to another) for N > 5. Strategies compared by a
+   from one member to another) for N > 7. Strategies compared by a
    leave-one-fold-out check (weights picked on 4 folds, scored on the 5th): best single member, equal weights, one global
    weight vector (all subjects), and one weight vector per subject. The simplest strategy within 0.0005 of the best wins.
 3. Test: members are fit on all training trials, the chosen weights blend the test similarities, the ranked lists are
@@ -69,7 +69,8 @@ from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
-HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs")
+HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs", "pdecw")
+# pdecw = subject-pooled whitened decoder: cache-only member, built by scripts/pool_member.py (needs --sim-cache)
 N_CANDIDATES = 102  # test set size: 1 target + 101 distractors
 STEPS = 10  # weights are multiples of 1 / STEPS
 TIE = 5e-4  # a simpler strategy within this much of the best leave-one-fold-out score is preferred
@@ -189,6 +190,8 @@ def encoder_matcher(head: str, window: slice) -> Matcher:
 
 def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slice) -> tuple[float | None, float | None]:
     """``(decoder alpha, encoder alpha)`` for this member (None where unused), chosen on the full training set."""
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     if m.head == "zs":
         return None, None
     enc = encoder_alpha(features, eeg, window) if m.head != "dec" else None
@@ -200,6 +203,8 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
                              folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3),
                              center: bool = False) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     dec_alpha, enc_alpha = alphas
 
     def e_val(trn: np.ndarray, val: np.ndarray) -> np.ndarray:
@@ -228,6 +233,8 @@ def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: n
                            measured: np.ndarray, window: slice, con_seeds: range = range(3),
                            center: bool = False) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     if center:
         measured = center_like(measured, eeg)
     if m.head == "zs":
@@ -286,7 +293,7 @@ def search(ev: Evaluator, subjects: list[int], folds: list[int], n: int) -> Weig
     def objective(w: Weights) -> float:
         return float(np.mean([avg_criterion(ev.criteria(s, folds, w)) for s in subjects]))
 
-    if n <= 5:
+    if n <= 7:
         cands = lattice(n)
         return cands[int(np.argmax([objective(w) for w in cands]))]
     singles = [tuple(STEPS if j == i else 0 for j in range(n)) for i in range(n)]
@@ -425,7 +432,7 @@ def main() -> None:
     print("CV-chosen strategy:", strategy)
 
     args.cv_out.parent.mkdir(parents=True, exist_ok=True)
-    cands = lattice(n) if n <= 5 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
+    cands = lattice(n) if n <= 7 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
     with args.cv_out.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["subject", "weights", "pct_rank", "exp_top1", "exp_top5", *[f"alphas_{m.name}" for m in members]])
