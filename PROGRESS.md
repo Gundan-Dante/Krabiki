@@ -543,6 +543,15 @@ Reproduce: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:dino
 The pooled caches come from krabiki-2f (`/home/kparpie/Krabiki-pool/results/similarity/_cache_pool`) and are copied into `results/similarity/_cache`. Pooling uses only other subjects' training recordings (checked in `pool_member.py`: `load_train` for the others, the target's own test set only for scoring).
 Reproduce: `PYTHONPATH=src:scripts python scripts/ensemble.py --member pdecw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:alexnet_c5p6:8 --member decw:lowlevel_all:1 --member decw:clap_all:1 --member decw:lowav_all:1 --max-seconds 1.5 --sim-cache results/similarity/_cache --center-test --csls 5 --csls-stage member --experiment v4a_ctr_m5` (the `pdecw` head is cache-only: build its caches with `scripts/pool_member.py`).
 
+### v4b / v4c: pooling the other members too (krabiki-2f's `pdecw` caches, track-pool 83c3285 / 24ee1be)
+| Run | Members pooled | LOFO (global strategy) | dev top-1 / top-5 / median | vs v4a (better / worse, p) |
+|---|---|---|---|---|
+| v3 | none | 0.27639 (chosen per-subject 0.27736) | 32.4 / 66.7 / 3.0 | – |
+| v4a | DINOv2-patch | 0.28189 | 33.3 / 68.9 / 2.5 | – |
+| **v4b** | + conv5, lowav | **0.28716** (+0.0053) | 33.8 / 68.1 / 2.6 | 75 / 65, p = 0.27 |
+| v4c | all six decoders | 0.28742 (+0.0003 over v4b) | see MODEL_BACKLOG M28 | not adopted (< +0.002) |
+v4b (`submissions/final_v4b_csls/`, weights .2 / .1 / .1 / .2 / .1 / .1 / .2 = ppatch / V-JEPA / con / pconv5 / descriptors / CLAP / plowav) passes the LOFO rule; dev agrees on top-1 (+0.5) but not on top-5 (-0.8), no significant difference per trial. Training-CV percentile rank on the scored subjects at each run's chosen weights: sub-05 v3 0.1530 / v4a 0.1463 / v4b 0.1439; sub-06 0.1809 / 0.1802 / 0.1753.
+
 ## Next
 Superseded by §7 "Resume plan" at the top of this file.
 
