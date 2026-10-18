@@ -171,3 +171,39 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 | Object-detector outputs (e.g. RF-DETR class counts) | low–medium, interpretable | RF-DETR is a detector with a DINOv2 backbone, not a diffusion model. Use its outputs, not its features |
 | Diffusion-model features (e.g. Stable Diffusion UNet) | low | Used for reconstruction in the literature, rarely better than CLIP for retrieval |
 | Time-resolved decoding (sliding 100 ms windows), channel importance | report figures (§8) | Cheap with the GPU helper |
+
+## M9: Encoder alpha under Euclid; CV-weighted ensemble of the whitened decoder (M8a) and the noise-Euclid encoder (M5) (krabiki-51, branch `track-matching`)
+- **Code:** `scripts/sweep_alpha_euclid.py` → `results/alpha_euclid_cv.csv`; `scripts/ensemble.py` →
+  `results/ensemble_cv_decw.csv` (whitened decoder, headline) and `results/ensemble_cv_dec.csv` (raw decoder, secondary);
+  `matching.nested_fold_similarities`.
+- **(a) Alpha re-tuning under Euclid: null.** Nested train-CV over a half-decade grid: Euclid's optimum is the same interior point as
+  the correlation optimum (1e4 for sub-01..04, one grid step off for sub-05/06). Re-tuning gains ≤ 0.0047 CV (sub-05), 0 on four subjects.
+  The encoder alpha stays as chosen by plain-correlation retrieval CV.
+- **(b) Ensemble** S = w·z(dec) + (1−w)·z(enc), w on a 0…1 grid (step 0.1), chosen by train-CV with out-of-fold similarity matrices
+  (same KFold seed 0; whiteners and matcher re-estimated per outer fold). Criteria: mean percentile rank, expected top-1 and top-5 of 102
+  (hypergeometric), picked by their mean. Same-fold numbers of krabiki-e1 reproduced.
+- **Whitened decoder: the CV picks w = 1.0 (decoder alone)** (global avg criterion 15.5% at w = 1.0 and 0.9 vs 14.1% at 0.5; percentile
+  rank 0.2319 at w = 1 vs 0.2487 at w = 0.5). Per-subject w: 0.8 / 1 / 1 / 1 / 0.7 / 1. Leave-one-fold-out: dec only 0.1550, global 0.1547,
+  per-subject 0.1553, equal 0.1411. Equal weight on dev: 13.2 / 41.7 / 7.8 vs decoder 14.7 / 42.2 / 7.5 (p = 0.46). Per-subject blend:
+  13.7 / 42.6 / 7.4 (p = 0.013, changes only sub-01: top-1 17.6 → 13.7, top-5 46.1 → 48.0).
+- **Raw decoder (secondary):** CV picks global w = 0.7; dev 13.0 / 40.7 / 8.0 vs 14.0 / 36.0 / 8.25 (better 192 / worse 121, p = 7e-8).
+- **Verdict:** the ensemble gain (M7) disappears once the decoder input is noise-whitened (M8a). The encoder is no longer a useful ensemble
+  member for CLIP B-32 features; keep the whitened decoder alone as the headline. Submission files exist for the CV-best blend
+  (`submissions/ens_decw_encnoise_subject/`, sub-06 identical to `decw`, sub-05 w = 0.7) but the evidence for preferring them is within noise.
+- **Next:** an ensemble may help again with a different feature space (DINOv2, CLIP L-14) as the second member; reuse `ensemble.py` with two decoders.
+
+## M10: DINOv2-B decoders (krabiki-e1, branch `track-dinov2`, commit 3da7561)
+- **Features:** timm `vit_base_patch14_dinov2.lvd142m` (DINOv2 ViT-B/14, 2023) at 224 px on every frame (24 min on GPU),
+  mean over 8 frames. Two descriptors per frame: CLS token and mean of the 256 patch tokens (768-d each).
+  Representational similarity with CLIP B-32 (Spearman over video pairs): CLS 0.57, patch 0.72.
+- **Whitened decoder (M8a recipe), dev top-1 / top-5 / mean-of-medians, train-CV mean over 6 subjects:**
+  CLIP B-32 14.7 / 42.2 / 7.5 (CV 0.232) | **DINOv2 patch 13.0 / 41.7 / 7.5 (CV 0.224; better than CLIP on 5 of 6
+  subjects, tie on sub-03)** | DINOv2 CLS 10.8 / 34.3 / 11.9 (CV 0.263) | CLS + patch concat 12.0 / 39.5 / 8.4.
+  Patch vs CLIP paired: 169 / 191, p = 0.86 (equivalent).
+- **Diagnostic equal-weight ensemble (row-z), not tuned:** CLIP + patch **15.2 / 45.3 / 7.25**, vs CLIP alone better 179 /
+  worse 140, p = 0.0024. CLIP + CLS 12.3 / 39.7 (no gain).
+- **Status:** CLIP + DINOv2-patch is the lead candidate for the final pipeline. Weights are to be chosen by train-CV with
+  krabiki-51's N-member ensemble tool.
+- **Reproduce:** `cd /home/kparpie/Krabiki-dinov2 && PYTHONPATH=src python scripts/extract_features.py --model dinov2_b
+  --all-frames --frames 8`, then `scripts/predict.py --head decoding --dec-whiten --features dinov2_b_patch_all --frames 8
+  --max-seconds 1.5 --alpha-selection retrieval`.
