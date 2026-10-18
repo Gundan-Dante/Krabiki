@@ -44,3 +44,6 @@ submissions/*
 !submissions/dec_clip_b32_f8_t1.5s_w5-60/
 !submissions/decw_clip_b32_f8_t1.5s_w5-60/
 results/zero_cost/
+!submissions/final_csls/
+!submissions/final_nocsls/
+!submissions/README.md
