@@ -2,7 +2,7 @@
 
 S = sum_i w_i * z(sim_i), z = per-row z-score over the candidates, w_i >= 0, sum w_i = 1 (step 0.1).
 
-Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con:FEATURES:CONFIG[:FRAMES]`` for contrastive) with HEAD in
+Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con|s3:FEATURES:CONFIG[:FRAMES]`` for contrastive / Stage 3) with HEAD in
     dec         raw decoder: EEG window -> standardized features, cosine
     decw        decoder with noise-whitened EEG input (``eegmr.decoding.DecodingVariant``)
     enc         encoder, plain correlation matching
@@ -13,6 +13,10 @@ Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con:FEATURES:CONFIG[
                 similarity is the mean of row-z similarities over ``--con-seeds`` SGD seeds (0, 1, ...), in the CV folds
                 and in the final fit. Whiteners are the decw member's (re-estimated on each fold's training part) and the
                 ridge alpha is the decoder alpha chosen for these features.
+    s3          Stage 3 nonlinear EEG encoder with InfoNCE (``eegmr.stage3``); CONFIG is a name from
+                ``scripts/train_stage3.py`` (e.g. ``eegnet_do0.25_lr0.001_wd0.01_w0-80``). It uses the config's own EEG
+                window, noise-whitened per timepoint (whiteners from the fold's training part, encoder alpha as for decw),
+                inner-split early stopping, and the mean of row-z similarities over ``--con-seeds`` seeds.
 and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, default FRAMES = ``--frames``).
 
 1. Training-only CV (5 folds, seed 0): out-of-fold similarity matrices of every member among the held-out videos.
@@ -20,9 +24,9 @@ and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, def
    chosen on the full training set by CV. For a weight vector the criteria are the mean percentile rank, the expected
    top-1 and the expected top-5 of 102 candidates (hypergeometric: the exact chance of the true video being in the top k
    if 101 distractors were drawn from the fold).
-2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 5 (at most 1001
+2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 6 (at most 3003
    points; the earlier greedy search used for N = 4 could stop in a local optimum), by steepest-ascent pair transfers (0.1
-   from one member to another) for N > 5. Strategies compared by a
+   from one member to another) for N > 6. Strategies compared by a
    leave-one-fold-out check (weights picked on 4 folds, scored on the 5th): best single member, equal weights, one global
    weight vector (all subjects), and one weight vector per subject. The simplest strategy within 0.0005 of the best wins.
 3. Test: members are fit on all training trials, the chosen weights blend the test similarities, the ranked lists are
@@ -65,7 +69,7 @@ from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
-HEADS = ("dec", "decw", "enc", "enc_noise", "con", "zs")
+HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs")
 N_CANDIDATES = 102  # test set size: 1 target + 101 distractors
 STEPS = 10  # weights are multiples of 1 / STEPS
 TIE = 5e-4  # a simpler strategy within this much of the best leave-one-fold-out score is preferred
@@ -87,9 +91,11 @@ class Member:
 def parse_member(spec: str, default_frames: int) -> Member:
     head, features, *rest = spec.split(":")
     assert head in HEADS, f"unknown head {head!r}, expected one of {HEADS}"
-    config = rest.pop(0) if head == "con" else ""
+    config = rest.pop(0) if head in ("con", "s3") else ""
     if head == "con":
         assert config in contrastive_configs(), f"unknown contrastive config {config!r}, expected {list(contrastive_configs())}"
+    if head == "s3":
+        assert config in stage3_configs(), f"unknown stage3 config {config!r}, expected one of train_stage3.all_configs()"
     return Member(head, features, int(rest[0]) if rest else default_frames, config)
 
 
@@ -152,6 +158,30 @@ def contrastive_similarity(cfg: ContrastiveConfig, dec_alpha: float, enc_alpha: 
     return z / len(seeds)
 
 
+def stage3_configs() -> dict:
+    """Stage 3 encoder configs by name (``scripts/train_stage3.py``: rungs 0-3 and the window controls)."""
+    from train_stage3 import all_configs  # scripts/ is on sys.path when run as a script
+    return all_configs()
+
+
+def stage3_similarity(cfg, enc_alpha: float, F_trn: np.ndarray, eeg_trn: np.ndarray, F_new: np.ndarray,
+                      eeg_new: np.ndarray, seeds: range) -> np.ndarray:
+    """Mean over seeds of the row-z similarity ``(n_eeg_new, n_videos_new)`` of a Stage 3 encoder trained on the training
+    part. Its input is the config's own window (e.g. 0:80 for EEGNet, not ``--window``), noise-whitened per timepoint with
+    whiteners estimated on the training part, then standardized with training statistics. Early stopping uses an inner
+    split of the training part (``eegmr.stage3.train_encoder``)."""
+    from eegmr.stage3 import inputs, train_encoder
+
+    dev = gpu.default_device()
+    w = slice(*cfg.window)
+    W = noise_whiteners(F_trn, eeg_trn, enc_alpha, w, device=dev)
+    X_trn, X_new, V_trn, V_new = inputs(eeg_trn, eeg_new, F_trn, F_new, W, w, dev)
+    z = 0
+    for seed in seeds:
+        z = z + row_z(train_encoder(X_trn, V_trn, cfg, seed).similarity(X_new, V_new).double().cpu().numpy())
+    return z / len(seeds)
+
+
 def encoder_matcher(head: str, window: slice) -> Matcher:
     return Matcher(window=window, **(dict(kind="noise", noise_cov="per_time", noise_similarity="euclid")
                                      if head == "enc_noise" else {}))
@@ -186,6 +216,10 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
         cfg = contrastive_configs()[m.config]
         return [contrastive_similarity(cfg, dec_alpha, enc_alpha, features[trn], eeg[trn], features[val], e_val(trn, val),
                                        window, con_seeds) for trn, val in folds]
+    if m.head == "s3":
+        cfg = stage3_configs()[m.config]
+        return [stage3_similarity(cfg, enc_alpha, features[trn], eeg[trn], features[val], e_val(trn, val), con_seeds)
+                for trn, val in folds]
     dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
     return [dec.fit(features[trn], eeg[trn]).similarity(e_val(trn, val), features[val]) for trn, val in folds]
 
@@ -208,6 +242,8 @@ def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: n
     if m.head == "con":
         return contrastive_similarity(contrastive_configs()[m.config], dec_alpha, enc_alpha, F_trn, eeg, F_tst, measured,
                                       window, con_seeds)
+    if m.head == "s3":
+        return stage3_similarity(stage3_configs()[m.config], enc_alpha, F_trn, eeg, F_tst, measured, con_seeds)
     dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
     return dec.fit(F_trn, eeg).similarity(measured, F_tst)
 
@@ -250,7 +286,7 @@ def search(ev: Evaluator, subjects: list[int], folds: list[int], n: int) -> Weig
     def objective(w: Weights) -> float:
         return float(np.mean([avg_criterion(ev.criteria(s, folds, w)) for s in subjects]))
 
-    if n <= 5:
+    if n <= 6:
         cands = lattice(n)
         return cands[int(np.argmax([objective(w) for w in cands]))]
     singles = [tuple(STEPS if j == i else 0 for j in range(n)) for i in range(n)]
@@ -274,7 +310,7 @@ def cache_path(args: argparse.Namespace, subject: int, m: Member, kind: str) -> 
     """Cache file of one member's raw similarities for one subject (``cv`` or ``test``); con members depend on the seeds."""
     if args.sim_cache is None:
         return None
-    seeds = f"_seeds{args.con_seeds.start}-{args.con_seeds.stop - 1}" if m.head == "con" else ""
+    seeds = f"_seeds{args.con_seeds.start}-{args.con_seeds.stop - 1}" if m.head in ("con", "s3") else ""
     args.sim_cache.mkdir(parents=True, exist_ok=True)
     key = (f"{m.name.replace(':', '-')}_f{m.frames}_t{args.max_seconds}_w{args.window[0]}-{args.window[1]}{seeds}"
            f"{'_ctr' if args.center_test else ''}")
@@ -287,7 +323,7 @@ def fmt(w: Weights) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--con-seeds", type=int, default=3, help="contrastive members: average row-z similarities over this many seeds")
+    p.add_argument("--con-seeds", type=int, default=3, help="con / s3 members: average row-z similarities over this many seeds")
     p.add_argument("--con-seed-start", type=int, default=0, help="first contrastive seed (seeds start .. start + con-seeds - 1)")
     p.add_argument("--csls", type=int, default=0, metavar="K",
                    help="CSLS with this k (0 = off, the default; transductive, needs organizer approval)")
@@ -389,7 +425,7 @@ def main() -> None:
     print("CV-chosen strategy:", strategy)
 
     args.cv_out.parent.mkdir(parents=True, exist_ok=True)
-    cands = lattice(n) if n <= 5 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
+    cands = lattice(n) if n <= 6 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
     with args.cv_out.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["subject", "weights", "pct_rank", "exp_top1", "exp_top5", *[f"alphas_{m.name}" for m in members]])
