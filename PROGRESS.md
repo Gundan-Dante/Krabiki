@@ -295,6 +295,17 @@ Submissions (format validated: 102 × 102 int64, rows permutations of the test I
 Reproduce b: `PYTHONPATH=src python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --experiment ens_con_b`
 (CV tables `results/ens_con_{a,b,c}_cv.csv`).
 
+### Seed robustness of run b (con member averaged over seeds 3, 4, 5 instead of 0, 1, 2; `results/ens_con_b_s345_cv.csv`)
+The CV-chosen global weights move by one 0.1 transfer, **0.1 / 0.6 / 0.3 → 0.0 / 0.6 / 0.4** (CLIP decoder → two-tower), and the optimum is a flat ridge: with seeds 3-5 the top
+global candidates are 0.0/0.6/0.4 (0.18070), 0.1/0.5/0.4 (0.18052), 0.0/0.5/0.5 (0.18007), 0.2/0.5/0.3 (0.18000), and the old weights 0.1/0.6/0.3 score 0.17924 (0.0015 lower);
+with seeds 0-2 the new weights score 0.18023 against 0.18073 for the old ones (0.0005 lower). Leave-one-fold-out (E1+E5)/2 with seeds 3-5: best single 0.16091 / equal 0.17529 /
+global **0.18036** / per-subject 0.17926 (seeds 0-2: 0.1807 global). The con member's CV (0.1477 for seeds 0-2) is essentially unchanged by the seeds.
+
+Dev (sub-01..04), top-1 / top-5 / median, with seeds 3-5: new weights **17.6 / 47.3 / 6.8** (vs decw clip alone 14.7 / 42.2 / 7.5: better 198 / worse 129, p = 2e-6; vs M11 15.2 / 45.3 / 7.2: 195 / 108, p = 1e-6),
+old weights 0.1/0.6/0.3 with the new seeds 16.4 / 46.1 / 6.5 (vs the seeds 0-2 run b, 17.4 / 46.8 / 6.0: 127 / 123, p = 0.67; new vs seeds 0-2 run b: 137 / 125, p = 0.41).
+So the weights are stable to within one step and the result does not depend on the seed set beyond the dev noise (about ±1 pt top-1); the old submission `ens_con_b_cv` stays valid.
+(`ensemble.py` gained `--con-seed-start` and `--ref-weights`.)
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.

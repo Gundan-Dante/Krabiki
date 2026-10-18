@@ -125,15 +125,15 @@ def contrastive_configs() -> dict[str, ContrastiveConfig]:
 
 def contrastive_similarity(cfg: ContrastiveConfig, dec_alpha: float, enc_alpha: float, F_trn: np.ndarray,
                            eeg_trn: np.ndarray, F_new: np.ndarray, eeg_new: np.ndarray, window: slice,
-                           seeds: int) -> np.ndarray:
+                           seeds: range) -> np.ndarray:
     """Mean over seeds of the row-z similarity ``(n_eeg_new, n_videos_new)`` of a head trained on the training part."""
     dev = gpu.default_device()
     W = noise_whiteners(F_trn, eeg_trn, enc_alpha, window, device=dev)
     X_trn, X_new, V_trn, V_new = prepare(eeg_trn, eeg_new, F_trn, F_new, W, window, dev)
     z = 0
-    for seed in range(seeds):
+    for seed in seeds:
         z = z + row_z(train_head(X_trn, V_trn, cfg, dec_alpha, seed).similarity(X_new, V_new).double().cpu().numpy())
-    return z / seeds
+    return z / len(seeds)
 
 
 def encoder_matcher(head: str, window: slice) -> Matcher:
@@ -149,7 +149,7 @@ def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slic
 
 
 def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg: np.ndarray, window: slice,
-                             folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: int = 3) -> list[np.ndarray]:
+                             folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3)) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
     dec_alpha, enc_alpha = alphas
     if m.head in ("enc", "enc_noise"):
@@ -164,7 +164,7 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
 
 
 def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: np.ndarray, eeg: np.ndarray,
-                           measured: np.ndarray, window: slice, con_seeds: int = 3) -> np.ndarray:
+                           measured: np.ndarray, window: slice, con_seeds: range = range(3)) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
     if m.head in ("enc", "enc_noise"):
         model = EncodingModel(alpha_selection="retrieval", window=window).fit(F_trn, eeg)
@@ -240,6 +240,9 @@ def fmt(w: Weights) -> str:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--con-seeds", type=int, default=3, help="contrastive members: average row-z similarities over this many seeds")
+    p.add_argument("--con-seed-start", type=int, default=0, help="first contrastive seed (seeds start .. start + con-seeds - 1)")
+    p.add_argument("--ref-weights", type=int, nargs="+", default=None, metavar="W",
+                   help="also score this fixed weight vector (integers summing to 10, one per member) as variant 'ref'")
     p.add_argument("--member", action="append", required=True, metavar="HEAD:FEATURES[:FRAMES]",
                    help=f"ensemble member, repeatable; HEAD in {HEADS}")
     p.add_argument("--frames", type=int, default=8, help="default frames of the feature caches")
@@ -257,6 +260,7 @@ def main() -> None:
     p.add_argument("--experiment", default="ens", help="prefix of the logged experiments")
     args = p.parse_args()
     members = [parse_member(spec, args.frames) for spec in args.member]
+    args.con_seeds = range(args.con_seed_start, args.con_seed_start + args.con_seeds)
     n, window = len(members), slice(*args.window)
     args.cv_out = args.cv_out or Path("results") / f"{args.experiment}_cv.csv"
     names = [m.name for m in members]
@@ -335,6 +339,9 @@ def main() -> None:
     variants["equal"] = dict.fromkeys(subjects, equal_vec)
     variants["global"] = dict.fromkeys(subjects, w_global)
     variants["subject"] = w_subject
+    if args.ref_weights:
+        assert len(args.ref_weights) == n and sum(args.ref_weights) == STEPS
+        variants["ref"] = dict.fromkeys(subjects, tuple(args.ref_weights))
     variants["cv"] = {"best single": variants[f"m{best1}"], "equal": variants["equal"], "global": variants["global"],
                       "per-subject": variants["subject"]}[strategy]
     rows: dict[str, list[dict]] = {name: [] for name in variants}
