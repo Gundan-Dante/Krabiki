@@ -28,6 +28,7 @@ removed. These are the same 17 channels as the THINGS-EEG2 preprocessed release.
   --max-seconds 1.5 --alpha-selection retrieval`
 
 ## Where things are
+- **Start with `HANDOFF.md`** (current state, final model, branches, open items).
 - `MODEL_BACKLOG.md`: every model and experiment with its numbers (M0…). The source of truth. Append, don't rewrite.
 - `PROGRESS.md` (current state), `IMPLEMENTATION_AUDIT.md`, `CONTRASTIVE_AUDIT.md`, `DATA_SURVEY.md`.
 - Parallel work lives in git worktrees `../Krabiki-{matching,dinov2,viz,vjepa}` on branches `track-*`.
