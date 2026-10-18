@@ -104,10 +104,134 @@ def extract_features(
     return out
 
 
-def load_features(name: str, n_frames: int, ids: np.ndarray, feature_dir: Path = DEFAULT_FEATURE_DIR) -> np.ndarray:
-    """Frame-averaged features ``(len(ids), D)`` for the requested video IDs."""
+# ---------------------------------------------------------------------------------------------------------------
+# All-frames extraction: decode each video once (DataLoader workers), preprocess + embed every frame on the GPU.
+# Any n-frame variant is then an exact index subset (same indices as read_frames), so it needs no re-extraction.
+# Cache: features/<name>_all.npz with ids, n_video_frames (1102,), frames (1102, max_frames, D) float16 (zero-padded).
+# Derived caches are written as features/<name>_all_f<n>.npz, so load_features(f"{name}_all", n, ...) works.
+# ---------------------------------------------------------------------------------------------------------------
+
+GpuEncoder = Callable[[torch.Tensor], torch.Tensor]  # (B, 3, H, W) float in [0, 1] on device -> (B, D)
+
+
+def _clip_b32_gpu(device: str) -> GpuEncoder:
+    """open_clip ViT-B-32 / laion2b_s34b_b79k with its preprocessing (bicubic resize to 224, CLIP mean/std) on GPU.
+
+    The videos are square, so open_clip's resize + centre crop reduces to a plain resize.
+    """
+    import open_clip
+
+    model = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")[0].eval().to(device)
+    mean = torch.tensor(open_clip.OPENAI_DATASET_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(open_clip.OPENAI_DATASET_STD, device=device).view(1, 3, 1, 1)
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        return model.encode_image((x.clamp(0, 1) - mean) / std).float()
+
+    return run
+
+
+GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu}
+
+
+class _VideoFrames(torch.utils.data.Dataset):
+    """All RGB frames of one video as uint8 ``(F, H, W, 3)``."""
+
+    def __init__(self, ids: np.ndarray, root: Path) -> None:
+        self.ids, self.root = ids, root
+
+    def __len__(self) -> int:
+        return len(self.ids)
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        cv2.setNumThreads(1)
+        cap = cv2.VideoCapture(str(video_path(int(self.ids[i]), self.root)))
+        frames = []
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        cap.release()
+        if not frames:
+            raise RuntimeError(f"could not decode video {self.ids[i]}")
+        return np.stack(frames)
+
+
+def all_frames_path(name: str, feature_dir: Path = DEFAULT_FEATURE_DIR) -> Path:
+    return Path(feature_dir) / f"{name}_all.npz"
+
+
+def extract_all_frames(
+    name: str,
+    root: Path = DEFAULT_ROOT,
+    feature_dir: Path = DEFAULT_FEATURE_DIR,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    num_workers: int = 4,
+) -> Path:
+    """Embed every frame of all 1,102 videos and cache them (see the section comment above)."""
+    encode = GPU_ENCODERS[name](device)
+    loader = torch.utils.data.DataLoader(_VideoFrames(ALL_IDS, root), batch_size=None, num_workers=num_workers)
+    per_video = []
+    for frames in tqdm(loader, desc=f"{name} all frames"):
+        x = frames.to(device).permute(0, 3, 1, 2).float() / 255.0
+        per_video.append(encode(x).cpu().numpy().astype(np.float16))
+    counts = np.array([len(v) for v in per_video])
+    out_frames = np.zeros((len(per_video), counts.max(), per_video[0].shape[1]), dtype=np.float16)
+    for i, v in enumerate(per_video):
+        out_frames[i, : len(v)] = v
+    out = all_frames_path(name, feature_dir)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(out, ids=ALL_IDS, n_video_frames=counts, frames=out_frames)
+    return out
+
+
+def derive_frame_subset(name: str, n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR) -> Path:
+    """Write ``<name>_all_f<n>.npz`` (ids, mean, frames) from the all-frames cache, with read_frames' indices."""
+    with np.load(all_frames_path(name, feature_dir)) as f:
+        ids, counts, frames = f["ids"], f["n_video_frames"], f["frames"]
+    picked = np.stack([frames[i, ((np.arange(n_frames) + 0.5) * c / n_frames).astype(int)]
+                       for i, c in enumerate(counts)])
+    out = feature_path(f"{name}_all", n_frames, feature_dir)
+    np.savez(out, ids=ids, mean=picked.astype(np.float32).mean(axis=1), frames=picked)
+    return out
+
+
+VIDEO_SECONDS = 3.0
+
+
+def frame_times(n_frames: int, duration: float = VIDEO_SECONDS) -> np.ndarray:
+    """Centre time (s) of each sampled frame, matching :func:`read_frames`."""
+    return (np.arange(n_frames) + 0.5) * duration / n_frames
+
+
+def pool_frames(frames: np.ndarray, pooling: str) -> np.ndarray:
+    """Pool per-frame features ``(n, F, D)`` into one vector per video.
+
+    ``first:<s>``      mean of the frames centred before ``s`` seconds (onset-weighted)
+    ``concat``         all frames side by side, ``(n, F*D)``
+    ``segments:<k>``   mean within k equal consecutive segments, concatenated, ``(n, k*D)``
+    """
+    kind, _, arg = pooling.partition(":")
+    if kind == "first":
+        keep = frame_times(frames.shape[1]) < float(arg)
+        assert keep.any(), f"no frame centred before {arg} s"
+        return frames[:, keep].mean(axis=1)
+    if kind == "concat":
+        return frames.reshape(len(frames), -1)
+    if kind == "segments":
+        return np.concatenate([seg.mean(axis=1) for seg in np.array_split(frames, int(arg), axis=1)], axis=1)
+    raise ValueError(f"unknown pooling {pooling!r}")
+
+
+def load_features(name: str, n_frames: int, ids: np.ndarray, feature_dir: Path = DEFAULT_FEATURE_DIR,
+                  pooling: str = "mean") -> np.ndarray:
+    """Pooled features ``(len(ids), D')`` for the requested video IDs (``pooling="mean"``: the cached frame mean)."""
     with np.load(feature_path(name, n_frames, feature_dir)) as f:
-        all_ids, mean = f["ids"], f["mean"]
+        all_ids = f["ids"]
+        values = f["mean"] if pooling == "mean" else pool_frames(f["frames"].astype(np.float32), pooling)
     rows = np.searchsorted(all_ids, ids)
     assert np.array_equal(all_ids[rows], ids), "requested IDs missing from feature cache"
-    return mean[rows]
+    return values[rows]

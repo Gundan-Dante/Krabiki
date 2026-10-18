@@ -19,3 +19,4 @@ __pycache__/
 results/similarity/
 submissions/*
 !submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/
+!submissions/dec_clip_b32_f8_t1.5s_w5-60/

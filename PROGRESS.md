@@ -3,9 +3,13 @@
 ## Current best (mean over sub-01..04 test sets, 102 candidates)
 | Experiment | top-1 | top-5 | median rank |
 |---|---|---|---|
-| **enc_clip_b32_f8_t1.5s_w5-60_retrieval** (CLIP ViT-B-32 / laion2b_s34b_b79k, 8 frames, scaler → PCA 95% → ridge, EEG 0–1.5 s, alpha by retrieval CV, no whitening) | **5.4%** | **21.1%** | **17.5** |
+| **dec_clip_b32_f8_t1.5s_w5-60** (decoding: EEG 50–600 ms → standardized CLIP B-32 f8 features, ridge, cosine; alpha by retrieval CV) | **14.0%** | **36.0%** | **8.2** |
+| enc_clip_b32_f8_t1.5s_w5-60_retrieval (encoding: CLIP → EEG, scaler → PCA 95% → ridge, correlation) | 5.4% | 21.1% | 17.5 |
 
-Submission files: `submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/sub-0{5,6}_ranked_candidate_list.npy`.
+Decoding direction found by session krabiki-e1 and reproduced in-package (`linear.DecodingModel`, `predict.py --head
+decoding`). Train-CV agrees without test labels: 0.207–0.315 per subject vs about 0.33–0.44 for encoding.
+Submission files: `submissions/dec_clip_b32_f8_t1.5s_w5-60/sub-0{5,6}_ranked_candidate_list.npy` (encoding files are
+still in `submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/`).
 CSLS is dropped for now (2026-10-18). k=10 on top gave 6.1% / 22.3% / 17.1, not significant (p=0.36). `--csls-k` stays in the code, off by default.
 
 > **2026-10-18: all results below the "Whitening fix" section were run with the whitened transform** (scaler → PCA →
@@ -87,6 +91,31 @@ correlation matching ignores scale. With the scaler removed, ridge shrinks the w
 
 Retrieval CV now picks alpha = 1e4 for every subject (interior grid point); GCV picks 5.6e3–1.8e4. Median rank
 improves on all four dev subjects (23/21/27/31 → 15/14/18/24).
+
+### Encoding sweep: PCA threshold × matching window (train-CV over 6 subjects, 73-alpha grid; `results/sweep_clip_b32_f8.csv`)
+CV spans only 0.328–0.351 over 60 configs. The best are pca none / 0.99 / 0.95 with window 5:60 (0.3282 / 0.3283 / 0.3290).
+Window ranking by CV: 5:60 < 5:80 < 0:60 < 0:80 < 5:50 < ... < 10:40. PCA: none ≈ 0.99 ≈ 0.95 < 0.9 < 0.8.
+Spearman(CV, dev median rank) = 0.68. **Encoding is on a plateau, and the canonical config stands.**
+
+### Frames and onset pooling (CLIP B-32 from the all-frames cache, 0–1.5 s, window 5:60; paired vs PIL f8 canonical)
+| Pooling | dec CV | dec top-1 / top-5 / medR | enc CV | enc top-1 / top-5 / medR |
+|---|---|---|---|---|
+| f8 mean | 0.2547 | 13.5 / 36.5 / 8.6 | 0.3291 | 5.6 / 21.6 / 17.4 |
+| f16 mean | 0.2550 | 13.7 / 36.5 / 9.4 | 0.3292 | 5.9 / 21.8 / 17.5 |
+| f32 mean | 0.2549 | 14.0 / 36.3 / 9.6 | 0.3287 | 5.9 / 22.5 / 17.4 |
+| f32 first 0.5 s | 0.2531 | 11.8 / 38.0 / 9.0 | **0.3260** | 5.9 / 22.8 / 17.4 |
+| f32 first 1.0 s | **0.2524** | 11.8 / 36.8 / 9.0 | 0.3268 | 6.1 / 23.3 / 17.1 |
+| f32 4 segments concat | 0.2546 | 13.7 / 36.8 / 9.8 (worse, p=0.04) | 0.3275 | 5.9 / 21.6 / 17.4 |
+| f8 concat | 0.2540 | 12.5 / 37.0 / 8.6 | 0.3282 | 5.4 / 21.6 / 17.5 |
+
+No variant is significantly better on dev (all p ≥ 0.06). **More frames do nothing.** CV slightly prefers onset-only
+pooling for both heads (the largest CV gain seen for encoding), but the test effect isn't significant.
+Why: CLIP barely changes within a clip. First vs last frame of the same clip has median cosine 0.90, while two
+different clips have 0.45, so each 3 s clip is essentially one scene to CLIP.
+
+Infrastructure: `eegmr.gpu` (shared torch module: multi-alpha ridge via one SVD, correlation/cosine similarity,
+encoding and decoding retrieval CV; 16 parity tests in `tests/test_gpu.py`). All-frames feature cache
+(`features.extract_all_frames`, 5 min for all 1,102 videos; frames per video vary from 45 to 92 because fps varies).
 
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
