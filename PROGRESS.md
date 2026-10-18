@@ -161,6 +161,66 @@ Picked: 2a = p 0.5, 2b = per-timepoint covariance + negative squared Euclidean d
 - Caveats: alpha is still chosen by plain-correlation retrieval CV, but Euclid distance depends on prediction amplitude, which alpha shrinks, so a re-tuned alpha under Euclid may do better. The CV score uses the alpha chosen on the full training set (training data only, but not nested). The OOF-based matcher is fitted on predictions from 80%-data models and applied to predictions from the full-data model.
 - Torch (CUDA, float64 transform / float32 ridge) is used for the OOF predictions and matcher statistics; it matches the earlier sklearn/numpy CV scores to ≤6e-6 and `LedoitWolf` to 2e-14.
 
+## Encoder alpha under Euclid, and CV-weighted decoder + encoder ensemble (track-matching)
+### (a) Alpha re-tuning under noise-whitened Euclid matching (`scripts/sweep_alpha_euclid.py` → `results/alpha_euclid_cv.csv`)
+Nested train-CV (matcher re-estimated per fold, alpha fixed per run, half-decade grid 1..1e9), mean percentile rank:
+
+| Subject | best alpha, corr | best alpha, Euclid | Euclid CV at the corr-chosen alpha | Euclid CV at its own best | gain |
+|---|---|---|---|---|---|
+| 01 | 1e4 | 3.2e4 | 0.2941 | 0.2936 | 0.0004 |
+| 02 | 1e4 | 1e4 | 0.2973 | 0.2973 | 0 |
+| 03 | 1e4 | 1e4 | 0.2800 | 0.2800 | 0 |
+| 04 | 1e4 | 1e4 | 0.2984 | 0.2984 | 0 |
+| 05 | 3.2e4 | 1e4 | 0.3015 | 0.2968 | 0.0047 |
+| 06 | 3.2e4 | 3.2e4 | 0.3435 | 0.3435 | 0 |
+
+**Null result.** The Euclid curve has the same interior optimum as the correlation curve (mean over subjects: 1e4), so Euclid's scale sensitivity does not
+move the best alpha. The encoder alpha stays as chosen by plain-correlation retrieval CV.
+
+### (b) Ensemble S = w·z(dec) + (1−w)·z(enc) (`scripts/ensemble.py`, CV in `results/ensemble_cv_decw.csv`, raw decoder in `results/ensemble_cv_dec.csv`)
+z = per-row z-score over the candidates. Decoder member = the noise-whitened decoder (`eegmr.decoding.DecodingVariant`, whiteners and alpha as in
+`predict.py --head decoding --dec-whiten`, re-estimated inside each outer fold); encoder member = CLIP B-32 8 frames, per-timepoint noise whitening + Euclid
+(matcher re-estimated inside each outer fold). Same folds (KFold 5, seed 0) as every other train-CV; alphas fixed to the full-training choice.
+Criteria per w: mean percentile rank, expected top-1 and top-5 of 102 (hypergeometric on fold ranks). Same-fold references of krabiki-e1 reproduced
+(dec 0.207 / 0.230 / 0.272 / 0.244 / 0.265 / 0.315 raw, equal-weight 0.216 / 0.234 / 0.251 / 0.241 / 0.257 / 0.309, expected top-k).
+
+Global CV (mean over sub-01..06), whitened decoder:
+
+| w (weight of the decoder) | 0 (enc only) | 0.5 | 0.8 | 0.9 | 1.0 (dec only) |
+|---|---|---|---|---|---|
+| mean percentile rank | 0.3025 | 0.2487 | 0.2339 | 0.2322 | **0.2319** |
+| expected top-1 of 102 | 4.5% | 6.2% | 6.7% | **6.8%** | 6.8% |
+| expected top-5 of 102 | 15.9% | 22.0% | 24.0% | 24.1% | **24.2%** |
+| (top-1 + top-5) / 2 | 10.2% | 14.1% | 15.4% | 15.5% | **15.5%** |
+
+Picks (global): avg → **w = 1.0**, percentile rank → 1.0, top-1 → 0.9, top-5 → 1.0. Per subject (avg criterion): 0.8 / 1.0 / 1.0 / 1.0 / 0.7 / 1.0 for sub-01..06
+(CV gain over the decoder alone: sub-01 +0.003, sub-05 +0.003, all others 0).
+Leave-one-fold-out check of (E[top-1] + E[top-5]) / 2: dec only 0.1550 | enc only 0.1021 | equal 0.1411 | global w 0.1547 | per-subject w 0.1553.
+With the raw decoder the picks were global w = 0.7 (per subject 0.8 / 0.7 / 0.5 / 0.8 / 0.6 / 1.0), LOFO dec 0.1337 | equal 0.1371 | global 0.1400 | per-subject 0.1391.
+
+**Once the decoder input is noise-whitened, the encoder adds nothing.** The CV optimum is the decoder alone. The earlier ensemble gain (M7, raw decoder) is consistent with the
+whitened encoder supplying the noise handling that the raw decoder lacked; the whitened decoder now has it itself.
+
+Dev (sub-01..04 test sets), paired Wilcoxon vs the whitened decoder alone (`scripts/compare_matching.py`; "better/worse" counts the trials whose rank changed):
+
+| Experiment (whitened decoder) | top-1 | top-5 | median rank | better / worse | p |
+|---|---|---|---|---|---|
+| dec alone (`ens_decw_encnoise_dec`) | 14.7% | 42.2% | 7.5 | – | – |
+| encoder alone (noise Euclid) | 8.8% | 31.6% | 11.6 | 146 / 233 | 4e-6 |
+| equal weight | 13.2% | 41.7% | 7.8 | 167 / 174 | 0.46 |
+| CV global w = 1.0 | = dec alone | | | | |
+| CV per-subject w (0.8 / 1 / 1 / 1) | 13.7% | 42.6% | 7.4 | 38 / 28 | 0.013 |
+
+The per-subject blend differs from the decoder only on sub-01 (w = 0.8: top-1 17.6 → 13.7%, top-5 46.1 → 48.0%); the other dev subjects are unchanged. Not a clear win.
+Secondary, raw decoder (14.0 / 36.0 / 8.25): equal weight 12.0 / 41.7 / 8.0 (p = 0.002); CV global w = 0.7: 13.0 / 40.7 / 8.0 (better 192 / worse 121, p = 7e-8);
+per-subject: 13.7 / 40.7 / 8.5 (p = 4e-8).
+
+Submissions: the CV-best rule (leave-one-fold-out, auto) chose the per-subject weights, so `submissions/ens_decw_encnoise_subject/sub-05,06` were written (sub-05 w = 0.7,
+sub-06 w = 1.0, which is identical to the `decw` decoder submission). Format validated (102 × 102 int64, each row a permutation of the test IDs).
+**Recommendation:** the CV gain over the decoder alone is within noise (LOFO +0.0003), so the plain whitened decoder (`submissions/decw_clip_b32_f8_t1.5s_w5-60/`)
+remains the headline; the ensemble file is the CV-best alternative.
+Reproduce: `PYTHONPATH=src python scripts/ensemble.py --features clip_b32 --frames 8 --max-seconds 1.5 --decoder whitened --experiment ens_decw_encnoise --cv-out results/ensemble_cv_decw.csv`
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
