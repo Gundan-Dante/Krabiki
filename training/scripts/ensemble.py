@@ -274,6 +274,39 @@ class Evaluator:
                                        hypergeom.cdf(4, n_distractors, better, N_CANDIDATES - 1).sum()])
         return self.memo[key]
 
+    def precompute(self, weights: list[Weights], batch: int = 512) -> None:
+        """Fill the memo for every ``(subject, fold, w)`` at once, vectorized over ``weights``.
+
+        Same values as :meth:`sums`: the blend adds the members in the same order with the same float64 products (a
+        zero weight adds an exact 0), and the hypergeometric terms are looked up in a table of the same
+        ``hypergeom.cdf`` values. Not used with blend-stage CSLS (that would need CSLS per weight vector).
+        """
+        import torch  # float64 elementwise ops (separate mul / add kernels) round exactly like numpy
+
+        assert not self.blend_csls
+        dev = gpu.default_device()
+        W = np.asarray(weights, dtype=np.int64)
+        coef = torch.as_tensor(W / STEPS, dtype=torch.float64, device=dev)  # same float64 values as wi / STEPS
+        keys = list(map(tuple, W.tolist()))
+        for subject, folds in self.sims.items():
+            for fold, zs in enumerate(folds):
+                n_distractors = len(zs[0]) - 1
+                k = np.arange(n_distractors + 1)
+                cdf0 = hypergeom.cdf(0, n_distractors, k, N_CANDIDATES - 1)
+                cdf4 = hypergeom.cdf(4, n_distractors, k, N_CANDIDATES - 1)
+                Z = [torch.as_tensor(z, dtype=torch.float64, device=dev) for z in zs]
+                better = np.empty((len(W), len(zs[0])), dtype=np.int64)
+                for lo in range(0, len(W), batch):
+                    c = coef[lo:lo + batch]
+                    s = c[:, 0, None, None] * Z[0]
+                    for i in range(1, len(Z)):
+                        s = s + c[:, i, None, None] * Z[i]
+                    diag = torch.diagonal(s, dim1=1, dim2=2)
+                    better[lo:lo + batch] = ((s >= diag[..., None]).sum(dim=2) - 1).cpu().numpy()
+                rows = np.stack([(better / n_distractors).sum(axis=1), cdf0[better].sum(axis=1),
+                                 cdf4[better].sum(axis=1)], axis=1)
+                self.memo.update({(subject, fold, w): r for w, r in zip(keys, rows)})
+
     def criteria(self, subject: int, folds: list[int], w: Weights) -> np.ndarray:
         """Per-trial means ``[pct rank, E[top-1], E[top-5]]`` over the given folds."""
         n = sum(len(self.sims[subject][f][0]) for f in folds)
@@ -388,6 +421,8 @@ def main() -> None:
         z_sims[s] = [[row_z(per_member[i][f]) for i in range(n)] for f in range(5)]
         print(f"sub-{s:02d} alphas (dec, enc):", {m.name: alphas[s, i] for i, m in enumerate(members)}, flush=True)
     ev = Evaluator(z_sims, args.csls if args.csls_stage == "blend" else 0)
+    if n <= 7 and not ev.blend_csls:  # the exhaustive search scores every lattice point anyway: do it vectorized
+        ev.precompute(lattice(n))
     print(f"CSLS: {'off' if not args.csls else f'k={args.csls}, stage={args.csls_stage}'}")
     all_folds, subjects = list(range(5)), args.subjects
 

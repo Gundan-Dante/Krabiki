@@ -48,3 +48,5 @@ bundle/
 
 # training pipeline outputs (training/run_pipeline.sh)
 /work/
+/work_*/
+/work_*.*
