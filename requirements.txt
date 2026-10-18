@@ -9,6 +9,7 @@ anyio==4.15.1
 asttokens==3.0.2
 attrs==26.1.0
 audioread==3.1.0
+av==18.1.0
 axial_positional_embedding==0.3.12
 braindecode==1.8.1
 certifi==2026.7.22

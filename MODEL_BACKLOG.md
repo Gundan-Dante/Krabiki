@@ -377,3 +377,50 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   drop extra windows, L-14, jitter, per-feature rescaling and encoder centering.
 - **Reproduce:** `python scripts/zero_cost.py run --features clip_b32 --frames 8 --specs base eeg_center ... && python scripts/zero_cost.py report --specs base eeg_center base@csls10 eeg_center@csls10`;
   `blend --ref clip_b32:8:base dinov2_b_patch_all:8:base --members clip_b32:8:eeg_center dinov2_b_patch_all:8:eeg_center vjepa2_l_all:16:eeg_center --csls 10`. Features: `extract_features.py --model clip_l14 --subset-only --frames 8` (and `clip_b32_mid8`).
+
+## M20: Audio (CLAP) and time-resolved low-level audio-visual decoders (track-audio, Alikhan's laptop, RTX 3050 4 GB)
+- **Code/data:** `src/eegmr/audio.py`, `scripts/extract_audio.py` (new; `features.py` untouched). PyAV `av==18.1.0` decodes the
+  mp4 audio (no system ffmpeg). Caches: `features/clap_all_f1.npz` (LAION-CLAP `laion/clap-htsat-unfused`, revision
+  `8fa0f1c6d0433df6e97c127f64b2a1d6c0dcda8a`, Apache-2.0, 2023; 512-d whole-clip `mean` + three 1 s segments in `frames`),
+  `features/low{vis,aud,av}_all_f1.npz` (no model: per 100 ms bin luminance / contrast / Sobel edges / motion, and RMS /
+  onset strength / 8 log10-mel bands; 30 bins x 4 / 10 / 14, flattened in `mean`). 43 clips have no usable audio (no stream
+  or RMS < 1e-4; 3 test videos: 1015, 1043, 1102): CLAP gives them the mean audible-training embedding, low-level audio
+  gives 0 loudness / onset and the log-power floor. **Rules check of CLAP's training data (LAION-Audio-630K) vs Moments in
+  Time: pending (human check of the model card).**
+- **Reproduction check on this machine:** decw clip_b32 f8 gives exactly the reference 14.7 / 42.2 (CV 0.1923 / 0.2058 /
+  0.2507 / 0.2190 / 0.2465 / 0.2769); with CSLS k=5 17.4 / 49.3. Test suite: 37 passed.
+- **Single decoders** (decw, 1.5 s crop, retrieval alpha; mean train-CV over 6 subjects, dev mean over sub-01..04):
+
+  | Features | window | mean CV | dev top-1 / top-5 / median rank |
+  |---|---|---|---|
+  | clap_all | 0-300 ms | 0.343 | 4.4 / 18.4 / 19.1 |
+  | **clap_all** | **50-600 ms** (CV-best on 6/6 subjects) | **0.328** | **5.4 / 20.3 / 20.0** |
+  | clap_all | 0-1.5 s | 0.342 | 2.7 / 18.6 / 18.9 |
+  | clap_all | 0-3 s (3 s crop) | 0.357 | 3.4 / 15.7 / 20.1 |
+  | lowvis_all | 50-600 ms | 0.328 | 4.4 / 18.6 / 21.1 |
+  | lowvis_all | 0-3 s | 0.352 | 5.1 / 18.9 / 21.1 |
+  | **lowav_all** | **50-600 ms** | **0.275** | **4.9 / 22.3 / 17.2** |
+  | lowav_all | 0-3 s | 0.298 | 7.4 / 22.8 / 16.0 (dev better, CV worse: CV rules) |
+
+  `lowaud_all` alone can't go through `predict.py`: the 3 silent test videos have identical features, so tied scores trip
+  the file-vs-memory assert. Its CV comes from the ensemble tool (0.334-0.351 per subject).
+- **Diversity:** RSA (Spearman of video x video cosine, training-standardized) CLAP vs CLIP B-32 = 0.181 (0.188 on audible
+  clips only), far below V-JEPA's 0.48-0.50.
+- **Ensembles** (`scripts/ensemble.py`, CV weights, `--max-seconds 1.5`):
+
+  | Members | CV weights | LOFO | dev top-1 / top-5 / med | vs decw clip (paired Wilcoxon) |
+  |---|---|---|---|---|
+  | clip + clap | per subject, mostly 0.8 / 0.2 | 0.155 -> 0.167 | 16.7 / 43.9 / 7.1 | 185 / 128, p = 0.0016 |
+  | clip + clap, CSLS 5 member | global 0.8 / 0.2 | 0.163 -> 0.174 | 20.1 / 51.0 / 5.2 | 179 / 120, p = 0.0018 |
+  | **clip + clap + lowav** | **global 0.5 / 0.1 / 0.4** | 0.155 -> **0.202** | **19.6 / 49.5 / 6.1** | 243 / 102, p = 2e-12 |
+  | **clip + clap + lowav, CSLS 5 member** | **global 0.5 / 0.1 / 0.4** | 0.163 -> **0.217** | **25.0 / 56.1 / 4.4** | 239 / 86, p = 1e-13 |
+
+  CV-only, 4 members (clip / clap / lowaud / lowvis): weights 0.4 / 0.1 / 0.2 / 0.3, LOFO 0.199: both the audio half and
+  the visual half of the low-level features get weight.
+- **Controls:** decoders trained on shuffled training pairs (training rows of the feature cache permuted, seed 0; test rows
+  unchanged): lowav 1.2 / 4.2 / 55.2, CLAP 0.5 / 3.9 / 47.5, CV 0.48-0.51, i.e. chance (`results/controls.csv`).
+- **Status:** adopted as candidate members. Open: M17 + clap + lowav (does the gain survive DINOv2 / V-JEPA / con?), and the
+  CLAP rules check.
+- **Reproduce:** `PYTHONPATH=src python scripts/extract_audio.py --model clap && python scripts/extract_audio.py --model
+  lowlevel`, then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:clap_all:1
+  --member decw:lowav_all:1 --max-seconds 1.5 [--csls 5 --csls-stage member] --experiment audio_ens3_csls{0,5}`.
