@@ -55,11 +55,18 @@ step_compare() {
     --perms "$AUD/audit_out/perms.json" --base-sub "$AUD/submissions/audit_rerun_cv" --perm-sub "$AUD/submissions/audit_perm_cv"
 }
 step_shuffle() {  # training pairs permuted, alphas re-chosen, the FINAL weights fixed (variant "ref"); dev subjects only
-  (cd "$AUD" && $PY $REPO/scripts/audit_controls.py --code-dir . --mode shuffle -- $MEM_ARGS $FLAGS $DATA \
-     --ref-weights $WEIGHTS --subjects 1 2 3 4 --experiment audit_shuffle --results audit_out/s.csv \
-     --cv-out audit_out/s_cv.csv) > "$OUT/shuffle.log" 2>&1
-  PYTHONPATH=$REPO/src $PY $REPO/scripts/audit_compare.py --out "$OUT/shuffle.json" score \
-    --sub-dir "$AUD/submissions/audit_shuffle_ref" --subjects 1 2 3 4
+  # one process per dev subject in parallel (4 threads each); the fixed --ref-weights make per-subject runs equivalent
+  for s in 1 2 3 4; do
+    (cd "$AUD" && OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 \
+       $PY $REPO/scripts/audit_controls.py --code-dir . --mode shuffle -- $MEM_ARGS $FLAGS $DATA \
+       --ref-weights $WEIGHTS --subjects $s --experiment audit_shuffle_s$s --results audit_out/s$s.csv \
+       --cv-out audit_out/s${s}_cv.csv) > "$OUT/shuffle_s$s.log" 2>&1 &
+  done
+  wait
+  for s in 1 2 3 4; do
+    PYTHONPATH=$REPO/src $PY $REPO/scripts/audit_compare.py --out "$OUT/shuffle_s$s.json" score \
+      --sub-dir "$AUD/submissions/audit_shuffle_s${s}_ref" --subjects $s
+  done
 }
 step_bundle() {
   $PY $REPO/scripts/export_bundle.py --code-dir "$AUD" --cache "$CACHE" --out "$BUNDLE" $MEM_ARGS \
