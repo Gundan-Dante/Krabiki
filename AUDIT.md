@@ -5,6 +5,8 @@ Date: 2026-10-18. Scope: the headline submission `submissions/final_csls/` (trac
 code-level checks). Numbers: dev = sub-01..04 test sets, top-1 / top-5 (chance 1.0 / 4.9). Details per model are in
 `MODEL_BACKLOG.md`; history in `PROGRESS.md`.
 
+> **Update (2026-10-18 evening):** the headline is now `final_v4_csls` (v4, dev 33.3 / 68.9). It has a quick audit: v3 rescore identical and v3 label-shuffle at chance (sub-01 1.0 / 3.9, sub-03 1.0 / 5.9); v4 rescore identical, sub-05/06 files == saved matrices, and the pooling code loads only other subjects' training data with zero-shot CV. The full controls below (§4) were run on `final_csls`. §5's projections refer to `final_csls`; for v3 they are sub-05 ~26 / ~58, sub-06 ~18 / ~48 (optimistic).
+
 ## 1. Progress, in one table
 
 | Stage | Model | Dev top-1 / top-5 | Selected by |

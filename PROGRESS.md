@@ -6,18 +6,20 @@ is about ±1.1 pts top-1 and ±1.9 pts top-5. Every model choice is made by **tr
 KFold seed 0, all 6 subjects). Dev only confirms, with a paired Wilcoxon on per-trial ranks. Per-model details:
 `MODEL_BACKLOG.md` (M0–M19). Orientation for agents: `CLAUDE.md`.
 
-## 1. Current best (FINAL selection, krabiki-51, exhaustive CV weights)
+## 1. Current best: v4 (2026-10-18 evening)
 
 | Set | Model | top-1 | top-5 | median | Status |
 |---|---|---|---|---|---|
-| **`submissions/final_csls/`** | Whitened decoders on DINOv2-B patch (0.4), V-JEPA 2-L 16 f (0.3), CLIP B-32 block-8 CLS (0.1), CLIP B-32 (0.0) + contrastive two-tower on CLIP (0.2, 3 seeds); test-set centering; CSLS k=5 per member | **24.0%** | **57.1%** | **4.25** | **Headline final.** CSLS allowed by the organizers (2026-10-18). LOFO 0.21235; vs old M17: better 209 / worse 82, p = 3e-13. |
-| `submissions/final_nocsls/` | Same members + Stage 3 EEGNet (s3), no centering, no CSLS | 19.1% | 50.0% | 5.5 | Backup |
-| `submissions/decw_clip_b32_f8_t1.5s_w5-60/` | Single whitened CLIP decoder (M8a) | 14.7% | 42.2% | 7.5 | Simple fallback |
+| **`submissions/final_v4_csls/`** | **v4 (M28):** 7 members: **subject-pooled** DINOv2-patch decoder (.2), V-JEPA 2 (.1), contrastive two-tower on CLIP (.1), AlexNet conv5 (.2), hand-crafted descriptors (.1), CLAP audio (.1), low-level AV per 100 ms "lowav" (.2); test centering; CSLS k=5 per member; global CV weights | **33.3%** | **68.9%** | **2.5** | **Headline.** LOFO 0.2819. Verified (rescore, files == saved matrices, pooling uses only other subjects' training data). |
+| `submissions/final_v3_csls/` | v3 (M25): the same members without pooling, per-subject weights | 32.4% | 66.7% | 3.0 | previous headline; quick audit passed (rescore, shuffle control at chance) |
+| `submissions/final_v3_nocsls/` | v3 without centering / CSLS | 25.2% | 58.1% | 4.1 | backup |
+| `submissions/final_csls/` | M17 + block-8 + CSLS | 24.0% | 57.1% | 4.25 | earlier headline, full audit (AUDIT.md) |
 
-Reproduced independently by krabiki-e1 from the saved score matrices (24.0 / 57.1 / 4.25), and all sub-05/06 files are
-validated. Command and details: `submissions/README.md`, `../Krabiki-matching/results/ens_final_summary.md`. The weights are
-stable under a different contrastive seed set (≤ one 0.1 step). EEGNet adds only +0.0004 LOFO with CSLS, so it's left out
-of the headline (complexity tie-break). The old M17 greedy weight search was corrected to exhaustive.
+Expected on the scored subjects (CV × the dev/CV ratio of sub-01..04, optimistic; see the presentation figure fig5):
+v3 sub-05 ~26% / ~58%, sub-06 ~18% / ~48%. v4 should be slightly higher: pooling helps the weakest subject most (M26).
+Path since the overview below: low-level members (AlexNet conv5, descriptors: M24, krabiki-51), audio + low-level AV (CLAP,
+lowav: M20–M22, Alikhan), the combined selection (v3, M25), subject pooling (M26, M28). Not adopted: motion gate (M23),
+dropping the contrastive head (M27), EEGNet in the final (M14, see EEGNET.md).
 
 ## 2. How we got here (dev top-1 / top-5)
 
