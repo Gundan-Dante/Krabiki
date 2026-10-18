@@ -260,3 +260,120 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   are already produced inside `contrastive.cv_scores`). Test CLIP-decw + DINOv2-decw + CLIP two-tower (+ DINOv2 linear)
   by CV, and consider averaging 3 seeds per contrastive member to cut SGD variance. Runtime about 10 s per subject per
   head on GPU (two-phase training).
+
+## M13: Contrastive members in the CV-weighted ensemble (krabiki-51, branch `track-matching`)
+- **Code:** `scripts/ensemble.py` member type `con:FEATURES:CONFIG` (`warm | linear | two_tower_d256`, `eegmr.contrastive` M12 heads on the decw input with the
+  per-fold whiteners and the decoder alpha of those features); similarity = mean of row-z similarities over 3 seeds, in the CV folds and in the final fit.
+  CV tables `results/ens_con_{a,b,c}_cv.csv`; seed-0 single-head CV reproduces M12 exactly.
+- **Result:** the contrastive heads ADD to the decoders. CV-best combo **b = decw clip 0.1 + decw DINOv2-patch 0.6 + con clip two-tower-d256 0.3** (global weights, chosen by
+  LOFO of (E1+E5)/2): LOFO 0.1807 vs 0.172 for M11 (CLIP + patch 0.5/0.5) and 0.155 for decw clip alone. Dev 17.4 / 46.8 / 6.0 (M11 15.2 / 45.3 / 7.2: better 185 / worse 103,
+  p = 9e-7; decw clip alone 14.7 / 42.2 / 7.5: 219 / 95, p = 1e-12).
+- **Other runs:** (a) decw clip + con two-tower: 0.5/0.5, LOFO 0.1635, dev 17.9 / 46.3 / 7.0. (c) b + con DINOv2-patch linear: weights 0.1/0.4/0.3/0.2, LOFO 0.1812, dev 18.6 / 47.8 / 6.1.
+  b vs c is a CV tie (0.0005), so the simpler b is taken. Per-subject weights never beat global ones by LOFO.
+- **Single heads:** con two-tower (3 seeds) CV 0.1477 vs decw 0.1550 but dev 16.7 / 45.8 vs 14.7 / 42.2 (CV is the guide, dev is ±1.1); con DINOv2-patch linear CV 0.1628 (best single member).
+- **Submissions:** `submissions/ens_con_b_cv/` (CV-best), `ens_con_c_cv/`, `ens_con_a_cv/` in the track-matching worktree (sub-05/06, local, format validated).
+- **Next:** more con members/seeds (variance), contrastive heads on other feature spaces, and a decision on 4 vs 3 members once more data (e.g. a third seed set) is available.
+- **M13 seed robustness (krabiki-51, track-matching 7bbe9c5):** with the con member averaged over seeds {3,4,5}
+  instead of {0,1,2}, the CV-chosen weights move by one grid step (0.1/0.6/0.3 → 0.0/0.6/0.4). The optimum is flat (top
+  candidates within 0.0015). Dev with the new seeds and weights: 17.6 / 47.3 / 6.8. New vs old run: 137 / 125, p = 0.41,
+  indistinguishable. Seed noise is about ±1 pt top-1. **Recommendation for the final pipeline:** average the con member
+  over 6 seeds (0–5) and keep CV-chosen weights (expected near 0.05 / 0.6 / 0.35).
+
+## M16: V-JEPA 2 ViT-L video features, whitened decoder (krabiki-viz session, branch `track-vjepa`, commit 4910887 + this entry)
+- **Features:** `facebook/vjepa2-vitl-fpc64-256` (MIT, HF revision b3c1679b7c34d3255ef3547f27c7b226aefab26f, via transformers 5.18.0). A
+  clip-level encoder: one forward pass per video on **16 frames** (read_frames segment-centre indices), fp16, the model's own preprocessing
+  (bilinear resize to 292, centre crop 256, ImageNet mean/std; the crop drops about 12% of the border). Pooled feature = mean over all final-layer tokens
+  (`get_vision_features`), 1024-d; a 4-segment temporal pooling is cached too (`frames`, unused so far). Pretraining data (paper Table 1):
+  SSv2, Kinetics 400/600/700, HowTo100M, YT-Temporal-1B, ImageNet. Moments in Time is not a named source. fp16 vs fp32 cosine ≥ 0.99999.
+  Extraction: 16 frames = 2.6 min, 64 frames fp16 = 17 min (on a shared GPU). **The 64-frame run was not done (on hold).**
+- **Single whitened decoder (M8a recipe), dev top-1 / top-5 / mean-of-medians:** **13.0 / 39.5 / 7.25**; per-subject top-1 10.8 / 14.7 / 12.7 / 13.7,
+  top-5 45.1 / 43.1 / 34.3 / 35.3. Train-CV per subject 0.2033 / 0.2070 / 0.2443 / 0.2159 / 0.2471 / 0.2647 (mean **0.2304**).
+  Reference: CLIP decw 14.7 / 42.2 / 7.5, CV mean 0.2320 (0.192 / 0.206 / 0.251 / 0.219 / 0.247 / 0.277); DINOv2 patch 13.0 / 41.7 / 7.5,
+  CV mean 0.2237 (0.180 / 0.204 / 0.251 / 0.203 / 0.237 / 0.267). V-JEPA vs CLIP paired: 167 better / 199 worse, p = 0.39 (equivalent). CV
+  puts V-JEPA between CLIP and the DINOv2 patch features on average (vs CLIP: better on sub-03, 04, 06, tie on 05, worse on 01, 02; vs DINOv2 patch: better only on sub-03 and 06).
+  Decoder alphas 1000-3162, as for the other features.
+- **Equal-weight row-z blends, diagnostic only, weights not tuned, paired Wilcoxon on 408 per-trial ranks vs M11 (CLIP + patch, 15.2 / 45.3 / 7.25):**
+
+| Blend | top-1 | top-5 | mean median | better / worse vs M11 | p |
+|---|---|---|---|---|---|
+| (a) CLIP + V-JEPA | 16.7 | 43.1 | 7.38 | 169 / 167 | 0.25 |
+| patch + V-JEPA | 16.2 | 44.9 | 6.88 | 171 / 156 | 0.26 |
+| **(b) CLIP + patch + V-JEPA** | 16.2 | 44.4 | **6.88** | **176 / 122** | **1e-4** |
+
+  (b) improves the per-trial rank over M11 (median 7.25 → 6.88, p = 1e-4) while top-5 is 0.9 pt lower and top-1 1.0 pt higher, so it is
+  the same ballpark on the headline metrics but better on the whole rank distribution. (a) is as good as M11 with CLIP as the only other member.
+- **Verdict:** V-JEPA 2 is a CLIP-sized single decoder with different information (blending with either CLIP or DINOv2 patch matches M11, and
+  all three together improve the ranks). Worth adding as a third feature member for the CV-weighted ensemble (krabiki-51's N-member tool). Whether 64 frames
+  adds anything is untested; given that CLIP gained nothing from more frames, the expected gain is small.
+- **Reproduce:** `python scripts/extract_features.py --model vjepa2_l --frames 16`, then `python scripts/predict.py --head decoding --dec-whiten
+  --features vjepa2_l_all --frames 16 --max-seconds 1.5 --alpha-selection retrieval`. Similarity matrices: `/home/kparpie/Krabiki-vjepa/results/similarity/decw_vjepa2_l_all_f16_t1.5s_w5-60/`.
+  Sub-05/06 submission files (local, gitignored): `submissions/decw_vjepa2_l_all_f16_t1.5s_w5-60/`.
+
+## M15: THINGS-EEG2 Step 0, zero-shot transfer from image-RSVP EEG (krabiki-51, branch `track-matching`): weak signal, no-go
+- **Data (rule 2 record):** THINGS-EEG2 preprocessed 17-channel release, Gifford, Dwivedi, Roig, Cichy, NeuroImage 2022; OSF project 3jk45, component anp5v (`sub-01.zip`, `sub-02.zip`, uploaded 2022-08-12, CC BY 4.0) and
+  component y63gw (`training_images.zip`, `test_images.zip`, `image_metadata.npy`; THINGS images: research use only). sha256 verified against the OSF API. Stored in `/home/kparpie/ext_data/things_eeg2/` (outside all repos);
+  pickled dicts loaded once in isolated mode with a whitelisting unpickler and re-saved as plain float32 npz. Channel order of the release = the organizers' order for our data.
+- **Code:** `src/eegmr/external.py` (safe conversion, alignment to our window), `scripts/things_step0.py` (`embed`, `fit`, `ours`, `prior`), ensemble member type `zs` in `scripts/ensemble.py`.
+- **Result:** ridge THINGS EEG (17 ch, 50-600 ms) -> CLIP B-32 (same open_clip laion2b model as our videos). Within THINGS (200-way) single-trial top-1 3.4%. Zero-shot on our EEG (no fitting): pooled train-EEG percentile rank 0.43 (chance 0.5), E[top-1] ~2%,
+  E[top-5] ~8%; dev top-1 0.7-2.2% (noise of chance), top-5 6-9%, median rank 36-42. As an ensemble member (decw + zs): CV picks 0.8 / 0.2, LOFO 0.1603 vs 0.1550, dev 14.5 / 40.7 / 7.9 vs 14.7 / 42.2 / 7.5 (p = 0.84). As a ridge shrinkage prior: CV percentile rank 0.2405 -> 0.2389, better on 6/6 subjects but negligible.
+- **Verdict:** a weak but real shared early-visual signal; not worth neural pretraining (domain gap: static objects at 100 ms/5 Hz RSVP vs 3-s dynamic scenes with sound). Steps 1-2 of the plan are dropped.
+
+## M17: V-JEPA 2 in the CV-weighted ensemble (krabiki-51, branch `track-matching`): new CV-best combo
+- **Code/data:** `scripts/ensemble.py` (no change), features `features/vjepa2_l_all_f16.npz` from M16 (`decw:vjepa2_l_all:16`); CV tables `results/ens_vj_{a,b}_cv.csv`.
+- **Result:** V-JEPA adds as a third decoder member. (a) decw clip + patch + V-JEPA: CV weights 0.4 / 0.3 / 0.3, LOFO 0.18512 (equal), dev 16.2 / 44.4 / 6.9 (vs M11 p = 1e-4, vs M13 p = 0.34).
+  **(b) + con clip two-tower (3 seeds): CV-chosen global weights 0.2 / 0.3 / 0.3 / 0.2 (clip / patch / V-JEPA / con), LOFO 0.19243 (M13: 0.1807; M11: 0.172), dev 20.8 / 48.0 / 6.2.**
+- **Dev, run b:** 20.8% top-1 / 48.0% top-5 / median 6.2 (M13 17.4 / 46.8 / 6.0: better 166 / worse 127, p = 0.028; M11 15.2 / 45.3 / 7.2: 207 / 99, p = 2e-10; run a: 184 / 81, p = 9e-10; decw clip alone: 224 / 111, p = 7e-13).
+  Per-subject dev top-1: 23.5 / 20.6 / 15.7 / 23.5. Per-subject weights do not beat the global ones by LOFO (0.19153 vs 0.19243).
+- **Submissions:** `submissions/ens_vj_b_cv/` (CV-best, sub-05/06, validated, local), `ens_vj_a_cv/`.
+- **Next:** more diverse decoder members (other V-JEPA layers/pooling, a second con head on V-JEPA/patch), or stop adding members: the LOFO gains are +0.012 (V-JEPA added to M13) and +0.007 (con added to run a).
+
+## M19: Fusion with Azamat's time-staged experts (krabiki-e1, diagnostic)
+- **What:** ran the teammate's `track-timestaged` pipeline (remote `main` b1a5343) unchanged except for the GPU device
+  (throwaway worktree `../Krabiki-azamat`). Experts: hand-made low-level features, DINOv2-S blocks 4/8/12, MViT-v2-S
+  (Kinetics-400), as encoding + correlation in early / middle / late EEG windows. Reproduced his honest LOSO result exactly:
+  9.1 / 25.7 / 15.2.
+- **Fusion with M17** (imported via his `08_import_scores.py`, which reproduced our numbers): his combiner gives all his
+  experts weight 0 next to M17. A finer blend z(M17) + w·z(his ensemble), w ∈ {0, 0.1, 0.2, 0.3, 0.5}, with w chosen by
+  LOSO over dev subjects: 20.3 / 47.8 vs M17 20.8 / 48.0, 120 better / 110 worse, p = 0.39. **No gain. Not adopted.**
+- **Takeaway:** his features are diverse, but encoding + correlation scores are too weak next to the whitened decoders.
+  If revisited, try his feature sets (MViT block 14, DINOv2 block 8, low-level) as **decw decoder targets** instead.
+
+## M18: Zero-complexity gains on the whitened decoder: test-time centering, CSLS, windows, jitter, bigger CLIP (krabiki-cc, branch `track-vjepa`)
+- **Code:** `scripts/zero_cost.py` (`run` / `report` / `blend`), `scripts/enc_center.py`, GPU encoders `clip_l14` and `clip_b32_mid8` in `features.py` (+ `extract_features.py --subset-only`). Full tables:
+  `results/zero_cost_summary.txt`. The baseline reproduces the saved decw similarity matrix exactly and the CV 0.2319 (CLIP). CV = mean percentile rank over the 6 subjects (KFold 5, seed 0, whiteners re-estimated per
+  outer fold, alpha chosen by CV; E[top-1] / E[top-5] are hypergeometric for a 102-pool); dev = sub-01..04 (14.7 / 42.2 / 7.5 for CLIP), paired Wilcoxon on 408 per-trial ranks vs the plain decoder of the same features.
+  Never tuned on dev: variants are chosen by CV, dev confirms. Raw per-fold similarity matrices (3.9 GB) are in `results/zero_cost/` (gitignored, regenerable).
+- **Results per idea (CLIP B-32 decw; deltas vs plain decw; dCV < 0 = better):**
+
+| Idea | dCV | dev top-1 / top-5 / med | better / worse, p | Re-check DINOv2-patch / V-JEPA | Verdict |
+|---|---|---|---|---|---|
+| **5. CSLS k=5 / 10 / 20** (fold-internal in CV, at the alpha chosen without CSLS) | -0.0058 / -0.0059 / -0.0060 (E[top-1] +0.6, E[top-5] +1.1 to 1.3 pts) | **17.4 / 49.3 / 6.0** (k=5), 17.4 / 48.5 / 6.4, 17.2 / 48.0 / 6.25 | 205 / 92, **2e-12**; k=10 6e-13; k=20 1e-13 | patch: 16.7-17.4 / 46-47, p ~1e-13 (dCV -0.0070); V-JEPA: 15.4-16.2 / 46.8, p ~1e-15 (dCV -0.0066) | **ADOPT** (k = 10; k is insensitive). Transductive over the 102 test items, label-free: needs a rule-5 ruling |
+| **1a. Test EEG centered** (own mean over the recordings replaced by the training mean) | -0.0002 | 15.0 / 41.9 / 7.75 | 149 / 103, 4e-4 | patch 13.0 / 42.4 / 7.12 (p 0.004, dCV -0.0006); V-JEPA 13.2 / 42.2 / 7.5 (p 0.008, dCV -0.0008) | **ADOPT** (small, consistent, free; CV understates it since folds don't carry the train/test shift) |
+| 1c. Candidate features centered on their own mean | 0.0000 | 14.7 / 42.4 / 7.88 | 39 / 54, 0.08 | (not re-run) | drop (neutral); (a)+(c) = 15.2 / 41.9 / 7.75, p 4e-4, no better than (a) |
+| 1b. Own mean AND std (per feature) of the test inputs; also candidates | 0.0000 | eeg 14.5 / 43.9 / 7.75 (p 0.01); eeg + cand 14.0 / 43.4 / 7.5 (p 7e-4) | 155 / 121; 155 / 117 | patch 12.5 / 42.4 (p 0.04); V-JEPA 12.5 / 41.4 (p 0.5) | drop (inconsistent) |
+| 1. Centering for the ENCODER (noise-Euclid and corr matching) | – | noise-Euclid 8.8 / 31.6 / 11.6 -> 8.6 / 33.6 / 11.9; corr 5.4 / 21.1 -> 5.4 / 19.9 | p 0.25-0.55 | – | drop |
+| 4. Time-jitter augmentation (training copies shifted by ±1, or ±1 and ±2 samples) | -0.0029 (±1), -0.0017 (±2) | 14.2 / 41.4 / 7.88 (±1); 13.7 / 40.9 / 8.0 | 125 / 119, 0.43; 136 / 138, 0.90 | patch dCV -0.0026, dev p 0.29; V-JEPA dCV -0.0028, p 0.85 | drop (CV gain of ~0.003 on all three, dev doesn't confirm) |
+| 2. Extra windows 150-350 ms / 600-1200 ms | single decoders far worse: CV 0.2675 / 0.3950 (vs 0.2319) | alone 10.0 / 32.1 / 11.6 and 2.9 / 14.0 / 28.3; equal-weight blends with 5:60: 12.3 / 39.2 (+150-350), 9.1 / 34.8 (+600-1200), 11.3 / 36.0 (both) | blends worse, p 0.003 / 2e-10 / 5e-4 | – | **drop** (the useful signal is in 50-600 ms) |
+| 3a. CLIP ViT-L-14 `laion2b_s32b_b82k` (HF laion/CLIP-ViT-L-14-laion2B-s32B-b82K rev 1627032197142fbe2a7cfec626f4ced3ae60d07a, 2022-09-14), 8 frames, fp16 | +0.0094 | 14.5 / 35.8 / 9.6 | 143 / 191, 0.003 (worse than B-32) | – | drop; as a 4th member in the 3-blend: CV +0.0032, dev p 0.14 (no gain) |
+| 3b. CLIP B-32 block-8 CLS (residual stream after 8 of 12 blocks) | +0.0415 alone | 12.3 / 31.4 / 12.5 | worse, 1e-8 | – | alone drop. **4th member of the 3-blend: CV better** (see below): ensemble-member candidate |
+
+- **Blends (equal-weight row-z, diagnostic, members' own CV alphas; reference M11 = CLIP + DINOv2-patch 15.2 / 45.3 / 7.25, CV 0.2155):**
+
+| Blend | CV pct | dev top-1 / top-5 / med | vs M11 (better / worse, p) |
+|---|---|---|---|
+| CLIP + patch + V-JEPA (3-blend) | 0.2018 | 16.2 / 44.4 / 6.88 | 176 / 122, 1e-4 |
+| 3-blend + CSLS 10 | 0.1950 | **21.3 / 52.7 / 5.0** | 236 / 85, 2e-16 |
+| 3-blend, test EEG centered, + CSLS 10 | 0.1944 | **23.0 / 53.9 / 4.88** | 235 / 83, 6e-18 |
+| CLIP + patch (M11) + CSLS 10 | 0.2099 | 22.5 / 47.5 / 6.0 | 218 / 71, 9e-19 |
+| 3-blend + B-32 block-8 (4 members), centered, + CSLS 10 | 0.1901 | 23.3 / 54.7 / 4.75 | 233 / 101, 2e-17 |
+| 3-blend + L-14 (4 members) + CSLS 10 | 0.1982 | 23.3 / 52.5 / 5.25 | 234 / 83, 2e-17 (CV worse than 3-blend) |
+
+- **Hub check (sub-01..06, 3-blend, plain vs centered + CSLS 10):** the number of distinct top-1 candidates rises from 39-48 to 53-60 of 102 and the most-picked candidate drops from 6-12 to 5 picks, on all six subjects including sub-05/06; top-1
+  picks agree between the two for 65-78% of recordings.
+- **Caveats:** (1) CSLS and test centering use only unlabeled test items but are transductive across the 102 recordings/candidates. CSLS also exploits the (true) one-video-per-recording structure of the test design, as the CV folds
+  do, though their pools are ~200 and not 102. The rule-5 reading is krabiki-e1's / the organizers' call. (2) CSLS was applied at the alpha chosen without it. (3) The 4-member CV gains need krabiki-51's CV-weighted tool before they count.
+  (4) Dev top-5 of the centered variants is flat; the gain is in the per-trial rank distribution and top-1.
+- **Recommendation:** adopt CSLS k=10 and test-EEG centering (a) in the final pipeline for every decw member and for the blend; add V-JEPA (M16) as third member; test the B-32 block-8 member in the CV-weighted ensemble;
+  drop extra windows, L-14, jitter, per-feature rescaling and encoder centering.
+- **Reproduce:** `python scripts/zero_cost.py run --features clip_b32 --frames 8 --specs base eeg_center ... && python scripts/zero_cost.py report --specs base eeg_center base@csls10 eeg_center@csls10`;
+  `blend --ref clip_b32:8:base dinov2_b_patch_all:8:base --members clip_b32:8:eeg_center dinov2_b_patch_all:8:eeg_center vjepa2_l_all:16:eeg_center --csls 10`. Features: `extract_features.py --model clip_l14 --subset-only --frames 8` (and `clip_b32_mid8`).

@@ -168,3 +168,9 @@ Picked: 2a = p 0.5, 2b = per-timepoint covariance + negative squared Euclidean d
 - Bigger levers: features (DINOv2, audio, more frames).
 - Sliding 100 ms window scan to find where the signal is (also report figure §8.1); then tune the window inside 0–600 ms.
 - Decoding direction (EEG → CLIP space, cosine); DINOv2 and audio features; pooled subjects.
+
+## Stage 3 feasibility (krabiki-2f), PAUSED 2026-10-18 for machine relocation; to be filed as M14
+- Train-CV (CLIP B-32, 6 subjects; ridge/M8a = 0.2319): MLP heads alone 0.243 ≈ linear 0.245; EEGNet alone 0.293; ShallowFBCSPNet ≈ chance (0.41–0.45: band-power features drop the evoked waveform); augmentation hurts slightly. **As a 0.25-weight ensemble member with M8a, EEGNet 0–800 ms gives 0.2240, better on 6/6 subjects** (MLP 0.2283, M12 two-tower 0.2290). A window control (linear/MLP on 0–800 ms: 0.2305/0.2291) shows the gain is from the conv architecture, not the window.
+- Learning curves (50/75/100% of training trials): ridge 0.275/0.249/0.232, EEGNet 0.356/0.320/0.292 (gap to ridge 0.081 → 0.071 → 0.061, so data-limited), EEGNet ensemble gain vs ridge −0.001/+0.0045/+0.008 (grows with data). Results: `results/stage3_{cv_rung1,cv_rung2,cv_conv,cv_windowctrl,curve}_clip_b32.csv`.
+- Not done: dev confirmation (3 seeds) of EEGNet / MLP as members, the DINOv2 repeat, the M14 write-up and verdict. Resume with:
+  `OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 OPENBLAS_NUM_THREADS=8 PYTHONPATH=src .venv/bin/python scripts/train_stage3.py --mode dev --configs eegnet_do0.25_lr0.001_wd0.01_w0-80 mlp512_do0.5_lr0.001_wd0.01_w5-60 --seeds 0 1 2`
