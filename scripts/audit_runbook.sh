@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Audit + bundle runbook for a CV-weighted ensemble produced by scripts/ensemble.py in another worktree.
 # Fill in the variables (from the producing session's report), then run:  bash scripts/audit_runbook.sh <step>
-# Steps: setup | rescore | rerun | permute | compare | shuffle | bundle | infer   (or "all" for the sequence below)
+# Steps: setup | rescore | rerun | permute | compare | shuffle | bundle | infer | package   (or "all")
 set -euo pipefail
 
 : "${COMMIT:?commit that produced the submission}"            # e.g. 7297a59
@@ -68,10 +68,21 @@ step_shuffle() {  # training pairs permuted, alphas re-chosen, the FINAL weights
       --sub-dir "$AUD/submissions/audit_shuffle_s${s}_ref" --subjects $s
   done
 }
-step_bundle() {
+step_bundle() {  # SUBJECT_WEIGHTS=<json {"1": [...], ...}> overrides WEIGHTS for per-subject strategies
+  W_ARGS=${SUBJECT_WEIGHTS:+--subject-weights $SUBJECT_WEIGHTS}
   $PY $REPO/scripts/export_bundle.py --code-dir "$AUD" --cache "$CACHE" --out "$BUNDLE" $MEM_ARGS \
-    --weights $WEIGHTS $FLAGS --source "$COMMIT, $EXP ($FINAL_DIR)" $DATA > "$OUT/export.log" 2>&1
+    ${W_ARGS:---weights $WEIGHTS} $FLAGS --source "$COMMIT, $EXP ($FINAL_DIR)" $DATA > "$OUT/export.log" 2>&1
   cp $REPO/scripts/infer_bundle.py "$BUNDLE/"
+}
+step_package() {  # docs + schematics + README, then zip (run after step_infer has verified the bundle)
+  VIZ=${VIZ:-/home/kparpie/Krabiki-viz/presentation}
+  for f in ARCHITECTURE.md IMPROVEMENTS.md EEGNET.md; do [ -f $REPO/$f ] && cp $REPO/$f "$BUNDLE/"; done
+  mkdir -p "$BUNDLE/schematics" && cp $VIZ/figures/fig1_progress.png $VIZ/figures/fig2_encoding_vs_decoding.png \
+    $VIZ/figures/fig4_ensemble_anatomy.png $VIZ/FIGURES.md "$BUNDLE/schematics/"
+  $PY $REPO/scripts/bundle_readme.py --bundle "$BUNDLE" --title "$FINAL_DIR" --dev "${DEV_LINE:-see bundle_meta.json}" \
+    --expected-dir "submissions/$FINAL_DIR" --verified "${VERIFIED_LINE:-}"
+  (cd "$(dirname "$BUNDLE")" && rm -f "$(basename "$BUNDLE").zip" && zip -qr -9 "$(basename "$BUNDLE").zip" "$(basename "$BUNDLE")")
+  ls -la "$BUNDLE.zip"
 }
 step_infer() {  # CPU only; must equal the committed final sub-05/06
   CUDA_VISIBLE_DEVICES="" $PY -I "$BUNDLE/infer_bundle.py" --bundle "$BUNDLE" --root $REPO/eeg-mind-reading-challenge \
@@ -82,6 +93,6 @@ step_infer() {  # CPU only; must equal the committed final sub-05/06
 }
 
 case "${1:-all}" in
-  all) step_setup; step_rescore; step_rerun; step_permute; step_compare; step_shuffle; step_bundle; step_infer ;;
+  all) step_setup; step_rescore; step_rerun; step_permute; step_compare; step_shuffle; step_bundle; step_infer; step_package ;;
   *) "step_$1" ;;
 esac
