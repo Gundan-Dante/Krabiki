@@ -35,7 +35,7 @@ from ensemble import center_like, preprocess
 
 LAMS = (0.0, 0.05, 0.1, 0.2, 0.5)
 WINDOW, MAX_SECONDS = slice(5, 60), 1.5
-DEV = "cuda" if torch.cuda.is_available() else "cpu"
+DEV = "cuda" if torch.cuda.is_available() else "cpu"  # set by --device
 
 
 def t64(x) -> torch.Tensor:
@@ -75,7 +75,12 @@ def main() -> None:
     p.add_argument("--cache", type=Path, required=True, help="output cache directory")
     p.add_argument("--root", type=Path, default=Path("eeg-mind-reading-challenge"))
     p.add_argument("--feature-dir", type=Path, default=Path("features"))
+    p.add_argument("--subjects", type=int, nargs="+", default=[1, 2, 3, 4, 5, 6], help="target subjects to build")
+    p.add_argument("--device", default=None, help="cuda / cpu (default: cuda if available)")
+    p.add_argument("--skip-existing", action="store_true", help="skip targets whose cv + test caches already exist")
     a = p.parse_args()
+    global DEV
+    DEV = a.device or DEV
     a.cache.mkdir(parents=True, exist_ok=True)
     key = lambda s, kind, head: a.decw_cache / f"sub-{s:02d}_{head}-{a.features}_f{a.frames}_t1.5_w5-60_ctr_{kind}.npz"  # noqa: E731
     subj = {}
@@ -91,6 +96,9 @@ def main() -> None:
         subj[s] = dict(ids=ids, eeg=eeg, F=F, Ft=t64(F), X=(Xs - mu) / sd, dec_alpha=dec_alpha, enc_alpha=enc_alpha)
     report = {}
     for t, st in subj.items():
+        out = a.cache / f"sub-{t:02d}_pdecw-{a.features}_f{a.frames}_t1.5_w5-60_ctr"
+        if t not in a.subjects or (a.skip_existing and Path(f"{out}_cv.npz").exists() and Path(f"{out}_test.npz").exists()):
+            continue
         folds = list(KFold(5, shuffle=True, random_state=0).split(st["ids"]))
         score = torch.zeros(len(LAMS), len(DEFAULT_ALPHAS), dtype=torch.float64, device=DEV)
         fold_parts = []
@@ -158,7 +166,6 @@ def main() -> None:
             w[len(Xt):] = lam
             Xn = (decoder_input(measured, WINDOW, Wt, DEV) - mu) / sd
             tsim = cosine(pooled_predict(Xc, Yc, w, Xn, [alpha])[0], (t64(F_tst) - fm) / fs).cpu().numpy().astype(np.float64)
-        out = a.cache / f"sub-{t:02d}_pdecw-{a.features}_f{a.frames}_t1.5_w5-60_ctr"
         np.savez(f"{out}_cv.npz", alphas=np.array([alpha, st["enc_alpha"]]), lam=np.float64(lam),
                  **{f"f{f}": s_ for f, s_ in enumerate(fsims)})
         np.savez(f"{out}_test.npz", sim=tsim)
@@ -166,7 +173,8 @@ def main() -> None:
                                   "cv_pct_rank_decw": float(score[0].min()), "cv_by_lam": {str(l): float(score[i].min()) for i, l in enumerate(LAMS)}}
         print(f"{a.features} sub-{t:02d}: lam={lam} alpha={alpha:g}  CV pct rank {score.min():.4f} (decw {score[0].min():.4f})  "
               + " ".join(f"{l}:{score[i].min():.4f}" for i, l in enumerate(LAMS)), flush=True)
-    (a.cache / f"pdecw-{a.features}_report.json").write_text(json.dumps(report, indent=1))
+    tag = "" if a.subjects == [1, 2, 3, 4, 5, 6] else "_sub" + "-".join(map(str, a.subjects))
+    (a.cache / f"pdecw-{a.features}_report{tag}.json").write_text(json.dumps(report, indent=1))
 
 
 if __name__ == "__main__":
