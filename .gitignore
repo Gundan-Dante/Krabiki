@@ -1,2 +1,5 @@
 eeg-mind-reading-challenge
 .venv
+.venv-tsx/
+track-timestaged/cache/
+track-timestaged/outputs/
