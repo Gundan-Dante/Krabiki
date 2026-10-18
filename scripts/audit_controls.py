@@ -4,6 +4,8 @@ code (``--code-dir``, a checkout of the audited commit) is imported unchanged.
 Modes:
     shuffle    permute each subject's training video IDs against its training EEG (pairs broken), then run the full
                ensemble pipeline (CV + test) and score dev: should be at chance
+    shuffle_pool  the same permutation for ``scripts/pool_member.py`` (all six subjects' pairs broken, since pooled
+               members use every subject): builds shuffled ``pdecw`` caches; pass that cache dir to a ``shuffle`` run
     rerun      recompute the test similarities of ``--subjects-recompute`` from scratch (CV and other subjects' test
                similarities come from ``--cache``), optionally with the test recordings of those subjects permuted
                (``--permute``); the permutation is saved so the output rows can be compared
@@ -37,7 +39,7 @@ def import_audited(code_dir: Path):
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--code-dir", type=Path, required=True)
-    p.add_argument("--mode", choices=["shuffle", "rerun", "fp16"], required=True)
+    p.add_argument("--mode", choices=["shuffle", "shuffle_pool", "rerun", "fp16"], required=True)
     p.add_argument("--subjects-recompute", type=int, nargs="*", default=[])
     p.add_argument("--permute", action="store_true", help="rerun: permute the test recordings of the recomputed subjects")
     p.add_argument("--perm-out", type=Path, default=Path("audit_out/perms.json"))
@@ -50,6 +52,19 @@ def main() -> None:
     import numpy as np
 
     rng = np.random.default_rng(args.seed)
+    if args.mode == "shuffle_pool":
+        import pool_member
+
+        original_pool = pool_member.load_train
+
+        def shuffled_pool(subject: int, root):
+            X, ids = original_pool(subject, root)
+            return X, ids[np.random.default_rng(args.seed + subject).permutation(len(ids))]
+
+        pool_member.load_train = shuffled_pool
+        sys.argv = ["pool_member.py", *rest]
+        pool_member.main()
+        return
     if args.mode == "shuffle":
         original = ens.load_train
 
