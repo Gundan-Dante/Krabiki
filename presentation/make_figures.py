@@ -262,7 +262,7 @@ def fig4_time() -> None:
         ax.plot(t, ch, color=C_ENC, lw=1, alpha=0.45)
     gfp = np.sqrt((erp ** 2).mean(0))
     ax.plot(t, gfp, color=INK, lw=3.2, label="overall strength (RMS over 17 channels)")
-    ax.set_ylabel("Average EEG signal (a.u.)")
+    ax.set_ylabel("EEG amplitude (a.u.)")
     ax.set_title("Average EEG over all training videos (mean of 6 subjects)")
     ax.legend(loc="upper right")
     ax = axes[1]

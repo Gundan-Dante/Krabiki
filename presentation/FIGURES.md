@@ -8,7 +8,7 @@ and 4.9% top-5.
 
 ## 1. `fig1_progress.png`: how the score grew
 Each bar adds one idea to the previous model. The baseline, which predicts the brain signal from simple image features, finds the
-exact video 2% of the time. Our final model, which reads the brain signal and compares it to two kinds of video features,
+exact video 2% of the time. Our final model (M11), which reads the brain signal and compares it to two kinds of video features,
 gets 15%, and 45% of the time the true video is among its 5 best guesses (chance: 5%). The whiskers show how uncertain
 each number is with only 408 test recordings, so the last small steps (14.0 → 14.7 → 15.2%) are not individually
 convincing, while the jumps from baseline to CLIP to decoding clearly are.
@@ -26,7 +26,7 @@ that made every direction equally strong (flat line), so the shrinkage could not
 test p = 2e-13). Computed here from subject 1's CLIP features; the accuracy bars are the logged results of the two pipelines.
 
 ## 4. `fig4_time_course.png`: when is the information in the EEG?
-Top: the average EEG over all training videos, one thin line per channel, with the 50–600 ms window we match on shaded. Bottom:
+Top: the average EEG over all training videos, one thin line per channel and a black line for overall amplitude (RMS over channels), with the 50–600 ms window we match on shaded. Bottom:
 how well a simple decoder can identify the video from just a 100 ms slice of EEG (0 = guessing, higher = better; measured by
 cross-validation on training data only). Information peaks about 150–250 ms after the video starts and then fades, which is
 why we only compare the first 600 ms. Later slices are still better than chance, so the shaded window is a choice that works
@@ -47,10 +47,10 @@ right video is usually near the top, and every modelling step lifts the whole cu
 
 ## 7. `fig7_examples.png`: one hit and two near misses
 Subject 1, three recordings, the model's three best guesses next to the true video (middle frame). The first is a correct
-first guess. In the other two the true video is ranked 2nd and 4th. Wrong guesses are often another scene of the same kind
-(rushing water for a rough outdoor scene; hands working on a table), but not always (the baby clips for a sawing video), so
-this suggests the EEG carries the gist of a scene rather than details. The three examples were picked to illustrate (one
-hit, two near misses), not at random.
+first guess. In the other two the true video is ranked 2nd and 4th. The wrong guesses are only sometimes similar scenes:
+for the outdoor scene in row 3 they are water and outdoor footage, which is plausibly gist-level, but for the sawing video in
+row 1 they are babies eating, which is not similar. So the examples are suggestive, not proof that the EEG carries scene gist.
+The three examples were picked to illustrate (one hit, two near misses), not at random.
 
 ## 8. `fig8_features.png`: which video features?
 Top-5 accuracy by the kind of video description. Left (encoding): a generic image network (AlexNet) is far behind CLIP,
