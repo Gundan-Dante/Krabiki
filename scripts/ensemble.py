@@ -20,12 +20,19 @@ and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, def
    chosen on the full training set by CV. For a weight vector the criteria are the mean percentile rank, the expected
    top-1 and the expected top-5 of 102 candidates (hypergeometric: the exact chance of the true video being in the top k
    if 101 distractors were drawn from the fold).
-2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 3, by
-   steepest-ascent pair transfers (0.1 from one member to another) for N > 3. Strategies compared by a
+2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 5 (at most 1001
+   points; the earlier greedy search used for N = 4 could stop in a local optimum), by steepest-ascent pair transfers (0.1
+   from one member to another) for N > 5. Strategies compared by a
    leave-one-fold-out check (weights picked on 4 folds, scored on the 5th): best single member, equal weights, one global
    weight vector (all subjects), and one weight vector per subject. The simplest strategy within 0.0005 of the best wins.
 3. Test: members are fit on all training trials, the chosen weights blend the test similarities, the ranked lists are
    written and (sub-01..04) scored, and a paired Wilcoxon on per-trial ranks is computed against the best single member.
+
+CSLS (``--csls K``, OFF by default: it is transductive, it uses all test rows jointly, no labels): ``--csls-stage blend`` applies
+``eegmr.retrieval.csls`` to the final blended matrix; ``--csls-stage member`` applies it to every member's matrix before the
+row-z blend. In the CV it is applied fold-internally, to each held-out fold's matrix (~200 recordings vs 102 at test time).
+``--sim-cache DIR`` stores the raw member similarities (CV folds, alphas, test) so that re-running with other weights,
+CSLS settings or a different seed set recomputes only what changed.
 
 Example:
     python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_cls_all --member enc_noise:clip_b32 \\
@@ -54,6 +61,7 @@ from eegmr.evaluate import evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
 from eegmr.linear import DEFAULT_ALPHAS, DecodingModel, EncodingModel
 from eegmr.matching import Matcher, nested_fold_similarities, oof_predictions
+from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
@@ -104,6 +112,13 @@ def lattice(n: int, total: int = STEPS) -> list[Weights]:
 
 # ---------------------------------------------------------------- members
 
+def center_like(eeg_new: np.ndarray, eeg_trn: np.ndarray) -> np.ndarray:
+    """Test-time centering: replace the mean (over recordings, per channel x time) of the recordings being scored by the
+    training mean. The recordings' own mean uses no labels (rule 5, unsupervised normalization); in the CV each held-out
+    fold uses its own mean. It is linear, so it commutes with the per-timepoint whitening."""
+    return (eeg_new - eeg_new.mean(axis=0) + eeg_trn.mean(axis=0)).astype(eeg_new.dtype)
+
+
 def encoder_alpha(features: np.ndarray, eeg: np.ndarray, window: slice) -> float:
     return EncodingModel(alpha_selection="retrieval", window=window).fit(features, eeg).alpha
 
@@ -152,27 +167,35 @@ def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slic
 
 
 def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg: np.ndarray, window: slice,
-                             folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3)) -> list[np.ndarray]:
+                             folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3),
+                             center: bool = False) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
     dec_alpha, enc_alpha = alphas
+
+    def e_val(trn: np.ndarray, val: np.ndarray) -> np.ndarray:
+        return center_like(eeg[val], eeg[trn]) if center else eeg[val]
+
     if m.head == "zs":
         from things_step0 import zero_shot_similarity
 
-        return [zero_shot_similarity(eeg[trn], eeg[val], features[trn], features[val], window) for trn, val in folds]
+        return [zero_shot_similarity(eeg[trn], e_val(trn, val), features[trn], features[val], window) for trn, val in folds]
     if m.head in ("enc", "enc_noise"):
         sims = nested_fold_similarities(features, eeg, enc_alpha, encoder_matcher(m.head, window))
         return [sim for _, sim in sims]
     if m.head == "con":
         cfg = contrastive_configs()[m.config]
-        return [contrastive_similarity(cfg, dec_alpha, enc_alpha, features[trn], eeg[trn], features[val], eeg[val],
+        return [contrastive_similarity(cfg, dec_alpha, enc_alpha, features[trn], eeg[trn], features[val], e_val(trn, val),
                                        window, con_seeds) for trn, val in folds]
     dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
-    return [dec.fit(features[trn], eeg[trn]).similarity(eeg[val], features[val]) for trn, val in folds]
+    return [dec.fit(features[trn], eeg[trn]).similarity(e_val(trn, val), features[val]) for trn, val in folds]
 
 
 def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: np.ndarray, eeg: np.ndarray,
-                           measured: np.ndarray, window: slice, con_seeds: range = range(3)) -> np.ndarray:
+                           measured: np.ndarray, window: slice, con_seeds: range = range(3),
+                           center: bool = False) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
+    if center:
+        measured = center_like(measured, eeg)
     if m.head == "zs":
         from things_step0 import zero_shot_similarity
 
@@ -194,14 +217,17 @@ def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: n
 class Evaluator:
     """Memoized fold criteria ``[sum percentile rank, sum E[top-1], sum E[top-5]]`` of a weight vector."""
 
-    def __init__(self, z_sims: dict[int, list[list[np.ndarray]]]):
+    def __init__(self, z_sims: dict[int, list[list[np.ndarray]]], blend_csls: int = 0):
         self.sims = z_sims  # subject -> fold -> member -> (val x val) row-z-scored similarity
+        self.blend_csls = blend_csls  # CSLS k applied to the blended fold matrix (0 = off)
         self.memo: dict[tuple, np.ndarray] = {}
 
     def sums(self, subject: int, fold: int, w: Weights) -> np.ndarray:
         key = (subject, fold, w)
         if key not in self.memo:
             s = sum(wi / STEPS * z for wi, z in zip(w, self.sims[subject][fold]) if wi)
+            if self.blend_csls:
+                s = csls(s, self.blend_csls)
             n_distractors = len(s) - 1
             better = (s >= np.diag(s)[:, None]).sum(axis=1) - 1  # held-out distractors scoring >= the true video
             self.memo[key] = np.array([(better / n_distractors).sum(),
@@ -224,7 +250,7 @@ def search(ev: Evaluator, subjects: list[int], folds: list[int], n: int) -> Weig
     def objective(w: Weights) -> float:
         return float(np.mean([avg_criterion(ev.criteria(s, folds, w)) for s in subjects]))
 
-    if n <= 3:
+    if n <= 5:
         cands = lattice(n)
         return cands[int(np.argmax([objective(w) for w in cands]))]
     singles = [tuple(STEPS if j == i else 0 for j in range(n)) for i in range(n)]
@@ -244,6 +270,17 @@ def best_single(ev: Evaluator, subjects: list[int], folds: list[int], n: int) ->
     return int(np.argmax([np.mean([avg_criterion(ev.criteria(s, folds, w)) for s in subjects]) for w in ws]))
 
 
+def cache_path(args: argparse.Namespace, subject: int, m: Member, kind: str) -> Path | None:
+    """Cache file of one member's raw similarities for one subject (``cv`` or ``test``); con members depend on the seeds."""
+    if args.sim_cache is None:
+        return None
+    seeds = f"_seeds{args.con_seeds.start}-{args.con_seeds.stop - 1}" if m.head == "con" else ""
+    args.sim_cache.mkdir(parents=True, exist_ok=True)
+    key = (f"{m.name.replace(':', '-')}_f{m.frames}_t{args.max_seconds}_w{args.window[0]}-{args.window[1]}{seeds}"
+           f"{'_ctr' if args.center_test else ''}")
+    return args.sim_cache / f"sub-{subject:02d}_{key}_{kind}.npz"
+
+
 def fmt(w: Weights) -> str:
     return "/".join(f"{x / STEPS:.1f}" for x in w)
 
@@ -252,6 +289,14 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--con-seeds", type=int, default=3, help="contrastive members: average row-z similarities over this many seeds")
     p.add_argument("--con-seed-start", type=int, default=0, help="first contrastive seed (seeds start .. start + con-seeds - 1)")
+    p.add_argument("--csls", type=int, default=0, metavar="K",
+                   help="CSLS with this k (0 = off, the default; transductive, needs organizer approval)")
+    p.add_argument("--center-test", action="store_true",
+                   help="replace the mean EEG of the recordings being scored (test set; held-out fold in the CV) by the training "
+                        "mean before whitening (off by default; label-free test-set normalization)")
+    p.add_argument("--csls-stage", choices=["blend", "member"], default="blend",
+                   help="blend: CSLS on the blended matrix; member: CSLS on each member before the blend")
+    p.add_argument("--sim-cache", type=Path, default=None, help="directory caching raw member similarities and alphas")
     p.add_argument("--ref-weights", type=int, nargs="+", default=None, metavar="W",
                    help="also score this fixed weight vector (integers summing to 10, one per member) as variant 'ref'")
     p.add_argument("--member", action="append", required=True, metavar="HEAD:FEATURES[:FRAMES]",
@@ -286,13 +331,25 @@ def main() -> None:
         folds = list(KFold(5, shuffle=True, random_state=0).split(ids))
         per_member = []
         for i, m in enumerate(members):
+            path = cache_path(args, s, m, "cv")
+            if path is not None and path.exists():
+                with np.load(path, allow_pickle=False) as z:
+                    alphas[s, i] = tuple(None if np.isnan(a) else float(a) for a in z["alphas"])
+                    per_member.append([z[f"f{f}"] for f in range(5)])
+                continue
             feats = load_features(m.features, m.frames, ids, args.feature_dir)
             alphas[s, i] = member_alphas(m, feats, eeg, window)
             per_member.append(member_fold_similarities(m, alphas[s, i], feats, eeg, window, folds,
-                                                          args.con_seeds))
+                                                          args.con_seeds, args.center_test))
+            if path is not None:
+                np.savez(path, alphas=np.array([np.nan if a is None else a for a in alphas[s, i]]),
+                         **{f"f{f}": per_member[-1][f] for f in range(5)})
+        if args.csls and args.csls_stage == "member":
+            per_member = [[csls(sim, args.csls) for sim in sims] for sims in per_member]
         z_sims[s] = [[row_z(per_member[i][f]) for i in range(n)] for f in range(5)]
         print(f"sub-{s:02d} alphas (dec, enc):", {m.name: alphas[s, i] for i, m in enumerate(members)}, flush=True)
-    ev = Evaluator(z_sims)
+    ev = Evaluator(z_sims, args.csls if args.csls_stage == "blend" else 0)
+    print(f"CSLS: {'off' if not args.csls else f'k={args.csls}, stage={args.csls_stage}'}")
     all_folds, subjects = list(range(5)), args.subjects
 
     single_vecs = [tuple(STEPS if j == i else 0 for j in range(n)) for i in range(n)]
@@ -332,7 +389,7 @@ def main() -> None:
     print("CV-chosen strategy:", strategy)
 
     args.cv_out.parent.mkdir(parents=True, exist_ok=True)
-    cands = lattice(n) if n <= 3 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
+    cands = lattice(n) if n <= 5 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
     with args.cv_out.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["subject", "weights", "pct_rank", "exp_top1", "exp_top5", *[f"alphas_{m.name}" for m in members]])
@@ -361,12 +418,24 @@ def main() -> None:
         X, ids = load_train(s, args.root)
         eeg = preprocess(X, args.max_seconds)
         measured = preprocess(load_test(s, args.root), args.max_seconds)
-        test_sims = [member_test_similarity(m, alphas[s, i], load_features(m.features, m.frames, ids, args.feature_dir),
-                                            load_features(m.features, m.frames, TEST_IDS, args.feature_dir), eeg,
-                                            measured, window, args.con_seeds) for i, m in enumerate(members)]
+        test_sims = []
+        for i, m in enumerate(members):
+            path = cache_path(args, s, m, "test")
+            if path is not None and path.exists():
+                with np.load(path, allow_pickle=False) as z:
+                    test_sims.append(z["sim"])
+                continue
+            test_sims.append(member_test_similarity(m, alphas[s, i], load_features(m.features, m.frames, ids, args.feature_dir),
+                                                    load_features(m.features, m.frames, TEST_IDS, args.feature_dir), eeg,
+                                                    measured, window, args.con_seeds, args.center_test))
+            if path is not None:
+                np.savez(path, sim=test_sims[-1])
         true_ids = load_test_labels(s, args.root)
+        member_sims = [csls(t, args.csls) for t in test_sims] if args.csls and args.csls_stage == "member" else test_sims
         for name, ws in variants.items():
-            sim = blend(test_sims, ws[s])
+            sim = blend(member_sims, ws[s])
+            if args.csls and args.csls_stage == "blend":
+                sim = csls(sim, args.csls)
             exp = f"{args.experiment}_{name}"
             (sim_dir / exp).mkdir(parents=True, exist_ok=True)
             np.save(sim_dir / exp / f"sub-{s:02d}.npy", sim)

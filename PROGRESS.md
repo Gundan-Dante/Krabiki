@@ -354,6 +354,14 @@ Submissions (validated: 102 x 102 int64, rows are permutations of the test IDs; 
 Reproduce b: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --experiment ens_vj_b`
 (CV tables `results/ens_vj_{a,b}_cv.csv`).
 
+## STATUS (paused for relocation): CSLS / center-test ensemble variants on M17 run b (track-matching)
+- `ensemble.py` now has `--csls K --csls-stage {blend,member}` (off by default), `--center-test` (off by default), `--sim-cache DIR`, and exhaustive weight search for up to 5 members (the earlier greedy search for 4 members could stop in a local optimum: with seeds 0-2, 0.0/0.4/0.3/0.3 scores 0.19330 vs 0.19269 for the reported 0.2/0.3/0.3/0.2).
+- **Finished** (CSVs `results/ens_vj_b_{re,c5blend,c5member,c10blend,c10member,s345,ctr}_cv.csv` were made with the OLD greedy search; `ens_vj_b_ctr_c5member_cv.csv` with the new exhaustive search): cached rerun of run b (exact reproduction), CSLS k=5/10 x blend/member (LOFO of chosen strategy 0.2043 / 0.2074 / 0.2059 / 0.2069, so member-stage k=5 is CV-best; dev 23.0/53.4, 24.5/56.6, 23.5/55.6, 23.3/55.4), con seeds 3-5 (weights 0.0/0.4/0.3/0.3, LOFO 0.19498, dev 18.4/48.5/5.8), center-test (greedy: 0.0/0.4/0.3/0.3, LOFO 0.19406), center-test + CSLS5 member (exhaustive: 0.1/0.4/0.3/0.2, LOFO 0.20855).
+- **Not done / cut off:** the 5-member runs with `decw:clip_b32_mid8_all:8` (`ens_vj5`, `ens_vj5_ctr_c5member`; CV done for the latter, test phase cut), the final consolidation with the exhaustive search for every variant, sub-05/06 files `ens_vj_b_csls_cv/`, MODEL_BACKLOG M17 addendum.
+- **Resume:** the member-similarity cache is local and not committed (`results/similarity/_cache`, about 120 files). Re-running any command below reuses it. Final plan: `git checkout results/results.csv`, then for each variant run
+  `PYTHONPATH=src:scripts OMP_NUM_THREADS=8 python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --sim-cache results/similarity/_cache --experiment <name> [--csls 5 --csls-stage member] [--center-test] [--con-seed-start 3]`
+  and optionally add `--member decw:clip_b32_mid8_all:8`; copy the CV-best CSLS variant's `submissions/<name>_cv` to `submissions/ens_vj_b_csls_cv`.
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
