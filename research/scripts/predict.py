@@ -16,8 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from eegmr.data import DEFAULT_ROOT, SFREQ, TEST_IDS, channel_stats, decimate, zscore_channels, load_test, load_test_labels, load_train
-from eegmr.evaluate import evaluate
+from eegmr.data import DEFAULT_ROOT, SFREQ, TEST_IDS, channel_stats, preprocess, zscore_channels, load_test, load_test_labels, load_train
+from eegmr.evaluate import RESULT_FIELDS, evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
 from eegmr.decoding import DecodingVariant, nested_cv_scores
 from eegmr.linear import DEFAULT_ALPHAS, DecodingModel, EncodingModel, retrieval_cv_curve
@@ -25,15 +25,6 @@ from eegmr.matching import Matcher, oof_predictions
 from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 
-RESULT_FIELDS = ["time", "experiment", "features", "frames", "subject", "top1", "top5", "median_rank",
-                 "alpha", "n_pcs", "window"]
-
-
-def preprocess(X: np.ndarray, max_seconds: float | None) -> np.ndarray:
-    """Crop the raw 500 Hz EEG (before filtering, so no later samples leak in), then decimate to 100 Hz."""
-    if max_seconds is not None:
-        X = X[..., : int(round(max_seconds * SFREQ))]
-    return decimate(X)
 
 
 def run_subject(subject: int, args: argparse.Namespace) -> dict[str, float] | None:

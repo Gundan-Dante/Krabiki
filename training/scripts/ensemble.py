@@ -9,7 +9,7 @@ Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con|s3:FEATURES:CONF
     enc_noise   encoder, per-timepoint noise whitening + negative squared distance (``eegmr.matching``)
     zs          zero-shot ridge trained on THINGS-EEG2 (``scripts/things_step0.py``), applied without fitting on our data
     con         linear InfoNCE head on the whitened-decoder input (``eegmr.contrastive``); CONFIG is one of
-                ``warm | linear | two_tower_d256`` (the ``selected`` grid of scripts/train_contrastive.py). The member's
+                ``warm | linear | two_tower_d256`` (``eegmr.contrastive.SELECTED_CONFIGS``). The member's
                 similarity is the mean of row-z similarities over ``--con-seeds`` SGD seeds (0, 1, ...), in the CV folds
                 and in the final fit. Whiteners are the decw member's (re-estimated on each fold's training part) and the
                 ridge alpha is the decoder alpha chosen for these features.
@@ -56,18 +56,16 @@ import numpy as np
 from scipy.stats import hypergeom
 from sklearn.model_selection import KFold
 
-from compare_matching import compare_table  # scripts/ is on sys.path when run as a script
 from eegmr import gpu
-from eegmr.contrastive import ContrastiveConfig, prepare, train_head
-from eegmr.data import DEFAULT_ROOT, TEST_IDS, load_test, load_test_labels, load_train
+from eegmr.contrastive import SELECTED_CONFIGS, ContrastiveConfig, prepare, train_head
+from eegmr.data import DEFAULT_ROOT, TEST_IDS, load_test, load_test_labels, load_train, preprocess
 from eegmr.decoding import DecodingVariant, nested_cv_scores, noise_whiteners
-from eegmr.evaluate import evaluate
+from eegmr.evaluate import RESULT_FIELDS, compare_table, evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
 from eegmr.linear import DEFAULT_ALPHAS, DecodingModel, EncodingModel
 from eegmr.matching import Matcher, nested_fold_similarities, oof_predictions
 from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
-from predict import RESULT_FIELDS, preprocess
 
 HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs", "pdecw")
 # pdecw = subject-pooled whitened decoder: cache-only member, built by scripts/pool_member.py (needs --sim-cache)
@@ -141,9 +139,7 @@ def decoder_alpha(features: np.ndarray, eeg: np.ndarray, enc_alpha: float, windo
 
 def contrastive_configs() -> dict[str, ContrastiveConfig]:
     """The CV-best config per variant on CLIP B-32 (M12), by short name."""
-    from train_contrastive import grid  # scripts/ is on sys.path when run as a script
-    warm, linear, two_tower = grid("selected")
-    return {"warm": warm, "linear": linear, "two_tower_d256": two_tower}
+    return dict(SELECTED_CONFIGS)
 
 
 def contrastive_similarity(cfg: ContrastiveConfig, dec_alpha: float, enc_alpha: float, F_trn: np.ndarray,

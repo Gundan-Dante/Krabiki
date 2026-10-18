@@ -40,6 +40,13 @@ def decimate(X: np.ndarray, factor: int = 5) -> np.ndarray:
     return _decimate(X, factor, ftype="fir", zero_phase=True, axis=-1).astype(np.float32)
 
 
+def preprocess(X: np.ndarray, max_seconds: float | None) -> np.ndarray:
+    """Crop the raw 500 Hz EEG (before filtering, so no later samples leak in), then decimate to 100 Hz."""
+    if max_seconds is not None:
+        X = X[..., : int(round(max_seconds * SFREQ))]
+    return decimate(X)
+
+
 def channel_stats(X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Per-channel mean and std of ``(n, channels, time)`` EEG over trials and time, shaped ``(channels, 1)``."""
     return X.mean(axis=(0, 2))[:, None], X.std(axis=(0, 2))[:, None]

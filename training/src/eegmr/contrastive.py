@@ -48,6 +48,12 @@ class ContrastiveConfig:
         return f"{self.kind}{extra}_lr{self.lr:g}_wd{self.weight_decay:g}"
 
 
+# CV-best config per variant on CLIP B-32 (M12; results/contrastive_cv_clip_b32.csv). The final model uses two_tower_d256.
+SELECTED_CONFIGS = {"warm": ContrastiveConfig("warm", lr=3e-4, weight_decay=1e-3, anchor=True),
+                    "linear": ContrastiveConfig("linear", lr=1e-3, weight_decay=1e-3),
+                    "two_tower_d256": ContrastiveConfig("two_tower", dim=256, lr=1e-3, weight_decay=1e-2)}
+
+
 @dataclass
 class ContrastiveHead:
     """A trained head; :meth:`similarity` gives cosine similarities ``(n_eeg, n_videos)``."""

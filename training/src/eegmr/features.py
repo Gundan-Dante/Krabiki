@@ -58,11 +58,35 @@ def _alexnet(device: str) -> Extractor:
     return run
 
 
-def _clip_b32(device: str) -> Extractor:
+# Pinned public checkpoints (exact files and Hugging Face revisions used for the cached features).
+CLIP_B32_REPO, CLIP_B32_REVISION = "laion/CLIP-ViT-B-32-laion2B-s34B-b79K", "1a25a446712ba5ee05982a381eed697ef9b435cf"
+CLIP_B32_FILE = "open_clip_model.safetensors"  # open_clip ViT-B-32 / laion2b_s34b_b79k
+DINOV2_B_REPO, DINOV2_B_REVISION = "timm/vit_base_patch14_dinov2.lvd142m", "4685c99dabffe5affac90bd99dbffd25801ae58d"
+DINOV2_B_FILE = "model.safetensors"  # timm vit_base_patch14_dinov2.lvd142m (DINOv2 ViT-B/14)
+
+
+def _pinned_file(repo: str, filename: str, revision: str) -> str:
+    """Local path of ``filename`` at an exact Hugging Face ``revision`` (downloaded once into the HF cache)."""
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(repo, filename, revision=revision)
+
+
+def _clip_b32_model():
+    """open_clip ViT-B-32 / laion2b_s34b_b79k loaded from the pinned checkpoint; returns ``(model, preprocess)``."""
     import open_clip
+
+    model, _, preprocess = open_clip.create_model_and_transforms(
+        "ViT-B-32", pretrained=_pinned_file(CLIP_B32_REPO, CLIP_B32_FILE, CLIP_B32_REVISION),
+        image_mean=open_clip.OPENAI_DATASET_MEAN, image_std=open_clip.OPENAI_DATASET_STD,
+        image_interpolation="bicubic", image_resize_mode="shortest")  # the laion2b_s34b_b79k preprocessing config
+    return model, preprocess
+
+
+def _clip_b32(device: str) -> Extractor:
     from PIL import Image
 
-    model, _, preprocess = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")
+    model, preprocess = _clip_b32_model()
     model = model.eval().to(device)
 
     @torch.no_grad()
@@ -121,7 +145,7 @@ def _clip_b32_gpu(device: str) -> GpuEncoder:
     """
     import open_clip
 
-    model = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")[0].eval().to(device)
+    model = _clip_b32_model()[0].eval().to(device)
     mean = torch.tensor(open_clip.OPENAI_DATASET_MEAN, device=device).view(1, 3, 1, 1)
     std = torch.tensor(open_clip.OPENAI_DATASET_STD, device=device).view(1, 3, 1, 1)
 
@@ -141,7 +165,8 @@ def _dinov2_b_gpu(device: str) -> GpuEncoder:
     """
     import timm
 
-    model = timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, img_size=224).eval().to(device)
+    model = timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, img_size=224,
+                              pretrained_cfg_overlay=dict(file=_pinned_file(DINOV2_B_REPO, DINOV2_B_FILE, DINOV2_B_REVISION))).eval().to(device)
     cfg = model.pretrained_cfg
     mean = torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1)
     std = torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1)
@@ -181,7 +206,7 @@ def _clip_b32_mid_gpu(device: str, block: int = 8) -> GpuEncoder:
     """CLIP B-32 (laion2b_s34b_b79k) residual-stream CLS token after ``block`` of its 12 transformer blocks (768-d)."""
     import open_clip
 
-    model = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")[0].eval().to(device)
+    model = _clip_b32_model()[0].eval().to(device)
     mean = torch.tensor(open_clip.OPENAI_DATASET_MEAN, device=device).view(1, 3, 1, 1)
     std = torch.tensor(open_clip.OPENAI_DATASET_STD, device=device).view(1, 3, 1, 1)
     grabbed: dict[str, torch.Tensor] = {}

@@ -25,7 +25,7 @@ import torch
 from scipy.stats import wilcoxon
 
 from eegmr import gpu
-from eegmr.contrastive import ContrastiveConfig, cv_scores, prepare, train_head
+from eegmr.contrastive import SELECTED_CONFIGS, ContrastiveConfig, cv_scores, prepare, train_head
 from eegmr.data import DEFAULT_ROOT, SFREQ, TEST_IDS, decimate, load_test, load_test_labels, load_train
 from eegmr.decoding import DecodingVariant, nested_cv_scores, noise_whiteners
 from eegmr.evaluate import evaluate, true_ranks
@@ -39,9 +39,7 @@ def grid(name: str = "main") -> list[ContrastiveConfig]:
     ``selected``: the CV-best config of each variant on CLIP (for repeating on other features).
     ``strong_wd``: (A) with weight decay large enough to act within the few dozen steps before early stopping."""
     if name == "selected":  # CV-best config per variant on CLIP B-32 (results/contrastive_cv_clip_b32.csv)
-        return [ContrastiveConfig("warm", lr=3e-4, weight_decay=1e-3, anchor=True),
-                ContrastiveConfig("linear", lr=1e-3, weight_decay=1e-3),
-                ContrastiveConfig("two_tower", dim=256, lr=1e-3, weight_decay=1e-2)]
+        return list(SELECTED_CONFIGS.values())
     if name == "strong_wd":
         return [ContrastiveConfig("linear", lr=lr, weight_decay=wd) for lr in (1e-3, 3e-3) for wd in (0.1, 1.0, 10.0)]
     A = [ContrastiveConfig("linear", lr=lr, weight_decay=wd) for lr in (3e-4, 1e-3, 3e-3) for wd in (1e-4, 1e-3, 1e-2)]

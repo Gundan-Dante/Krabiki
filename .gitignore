@@ -39,16 +39,12 @@ wandb/
 
 # experiment outputs: keep locally, commit only the canonical submission
 results/similarity/
+# only the final predictions are committed (older sets: research/submissions/)
 submissions/*
-!submissions/enc_clip_b32_f8_t1.5s_w5-60_retrieval/
-!submissions/dec_clip_b32_f8_t1.5s_w5-60/
-!submissions/decw_clip_b32_f8_t1.5s_w5-60/
 results/zero_cost/
-!submissions/final_csls/
-!submissions/final_nocsls/
 !submissions/README.md
 bundle/
-!submissions/final_v3_csls/
-!submissions/final_v3_nocsls/
-!submissions/final_v4_csls/
 !submissions/final_v4b_csls/
+
+# training pipeline outputs (training/run_pipeline.sh)
+/work/
