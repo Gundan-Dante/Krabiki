@@ -424,3 +424,31 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 - **Reproduce:** `PYTHONPATH=src python scripts/extract_audio.py --model clap && python scripts/extract_audio.py --model
   lowlevel`, then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:clap_all:1
   --member decw:lowav_all:1 --max-seconds 1.5 [--csls 5 --csls-stage member] --experiment audio_ens3_csls{0,5}`.
+
+## M21: Super ensemble = M17 + CLAP + low-level AV (track-audio): new best
+- **What:** `scripts/ensemble.py` (no change) with the M17 members (decw clip_b32 f8, decw dinov2_b_patch_all f8, decw
+  vjepa2_l_all f16, con clip_b32 two_tower_d256, 3 seeds) plus the M20 members decw clap_all f1 and decw lowav_all f1.
+  6 members, so weights come from the steepest-ascent pair transfers (N > 5). All features re-extracted on this machine
+  (DINOv2 all frames 28 min, V-JEPA 3.5 min, RTX 3050). CV tables `results/final_{m17,super}_csls{0,5}_cv.csv`.
+- **M17 reproduced on this machine** (same folds): CV now picks 0.0 / 0.3 / 0.4 / 0.3 (the exhaustive-search optimum noted
+  under krabiki-51), dev 20.1 / 50.2 / 5.5; with CSLS 5 per member 0.1 / 0.4 / 0.3 / 0.2, dev 24.5 / 56.6 / 4.4 (= reported).
+- **Result:**
+
+  | Ensemble | CV weights (clip / patch / vjepa / con / clap / lowav) | LOFO | dev top-1 / top-5 / median |
+  |---|---|---|---|
+  | M17 | 0.0 / 0.3 / 0.4 / 0.3 | 0.193 | 20.1 / 50.2 / 5.5 |
+  | **M17 + clap + lowav** | global 0.0 / 0.2 / 0.2 / 0.2 / 0.1 / 0.3 | **0.234** | **25.0 / 55.6 / 4.8** |
+  | M17, CSLS 5 member | 0.1 / 0.4 / 0.3 / 0.2 | 0.208 | 24.5 / 56.6 / 4.4 |
+  | **M17 + clap + lowav, CSLS 5 member** | per subject (global 0.1 / 0.2 / 0.2 / 0.1 / 0.1 / 0.3) | **0.248** | **29.4 / 64.5 / 3.2** |
+
+  Paired Wilcoxon on the 408 dev trial ranks, super vs M17: no CSLS 207 better / 106 worse, **p = 4e-9**; CSLS **207 / 80,
+  p = 5e-13**. Per-subject dev top-1 with CSLS: 32.4 / 28.4 / 27.5 / 29.4 (M17: 30.4 / 21.6 / 20.6 / 25.5). The low-level AV
+  member gets the largest single weight (0.3).
+- **Submissions** (local, gitignored, validated: 102 x 102 int64, each row a permutation of 1001..1102):
+  `submissions/final_super_csls5_cv/` (CSLS on; organizers approved hubness correction) and `final_super_csls0_cv/`.
+- **Open:** CLAP rules check (training data vs Moments in Time); test-set centering (M18) on top; lowaud + lowvis as two
+  separate members instead of lowav.
+- **Reproduce:** extract features (M20 + `extract_features.py --model dinov2_b --all-frames --frames 8`, `--model vjepa2_l
+  --frames 16`), then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member
+  decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:clap_all:1
+  --member decw:lowav_all:1 --max-seconds 1.5 --csls 5 --csls-stage member --experiment final_super_csls5`.
