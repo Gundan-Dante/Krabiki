@@ -24,3 +24,4 @@
    - Untested in the new layout.
    - `pool_member.py`'s λ=0 assert against the real decw cache will fail under shuffled labels; skip it in that mode.
    - Use a fresh cache dir, never the production one.
+10. **macOS / CPU:** `training/requirements-cpu.txt` was generated from the pinned file (CUDA packages dropped, `+cu128` removed) but not resolved on macOS; if a pin has no macOS wheel, install that package unpinned and record the version. Inference needs only `inference/requirements.txt`.

@@ -12,6 +12,7 @@ the CUDA 12.8 torch wheels:
 ```bash
 python3.11 -m venv .venv && source .venv/bin/activate
 pip install -r training/requirements.txt        # includes the --extra-index-url for the cu128 torch builds
+# macOS / no CUDA: pip install -r training/requirements-cpu.txt   (same pins without CUDA; runs on CPU, slower)
 ```
 
 Put the challenge data at `<repo>/eeg-mind-reading-challenge/` (or set `DATA=...`). Public model weights are downloaded
