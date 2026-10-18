@@ -385,8 +385,13 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   `features/low{vis,aud,av}_all_f1.npz` (no model: per 100 ms bin luminance / contrast / Sobel edges / motion, and RMS /
   onset strength / 8 log10-mel bands; 30 bins x 4 / 10 / 14, flattened in `mean`). 43 clips have no usable audio (no stream
   or RMS < 1e-4; 3 test videos: 1015, 1043, 1102): CLAP gives them the mean audible-training embedding, low-level audio
-  gives 0 loudness / onset and the log-power floor. **Rules check of CLAP's training data (LAION-Audio-630K) vs Moments in
-  Time: pending (human check of the model card).**
+  gives 0 loudness / onset and the log-power floor. **Rules check (2026-10-18): passed.** Apache-2.0, released 2023. The HF card names only
+  LAION-Audio-630K, whose 8 sources are all audio libraries (Freesound, Epidemic Sound, Audiostock, BBC Sound Effects,
+  Free To Use Sounds, Sonniss, Paramount Motion, We Sound Effects; github.com/LAION-AI/audio-dataset): no video dataset,
+  no Moments in Time. Which original checkpoint the HF conversion used (630k-best vs 630k-audioset-best) is not documented,
+  so worst case it also saw AudioSet (Google, 10 s YouTube segments with sound-event labels), which is not built on Moments
+  in Time either. Residual risk: incidental overlap of YouTube source videos, the same kind as for CLIP (LAION-2B) and
+  V-JEPA 2 (YT-Temporal-1B), which the team already accepted.
 - **Reproduction check on this machine:** decw clip_b32 f8 gives exactly the reference 14.7 / 42.2 (CV 0.1923 / 0.2058 /
   0.2507 / 0.2190 / 0.2465 / 0.2769); with CSLS k=5 17.4 / 49.3. Test suite: 37 passed.
 - **Single decoders** (decw, 1.5 s crop, retrieval alpha; mean train-CV over 6 subjects, dev mean over sub-01..04):
@@ -419,8 +424,7 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   the visual half of the low-level features get weight.
 - **Controls:** decoders trained on shuffled training pairs (training rows of the feature cache permuted, seed 0; test rows
   unchanged): lowav 1.2 / 4.2 / 55.2, CLAP 0.5 / 3.9 / 47.5, CV 0.48-0.51, i.e. chance (`results/controls.csv`).
-- **Status:** adopted as candidate members. Open: M17 + clap + lowav (does the gain survive DINOv2 / V-JEPA / con?), and the
-  CLAP rules check.
+- **Status:** adopted; M17 + clap + lowav tested in M21 (the gain survives). CLAP rules check passed (above).
 - **Reproduce:** `PYTHONPATH=src python scripts/extract_audio.py --model clap && python scripts/extract_audio.py --model
   lowlevel`, then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:clap_all:1
   --member decw:lowav_all:1 --max-seconds 1.5 [--csls 5 --csls-stage member] --experiment audio_ens3_csls{0,5}`.
@@ -446,7 +450,7 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   member gets the largest single weight (0.3).
 - **Submissions** (local, gitignored, validated: 102 x 102 int64, each row a permutation of 1001..1102):
   `submissions/final_super_csls5_cv/` (CSLS on; organizers approved hubness correction) and `final_super_csls0_cv/`.
-- **Open:** CLAP rules check (training data vs Moments in Time); test-set centering (M18) on top; lowaud + lowvis as two
+- **Open:** test-set centering (M18) on top; lowaud + lowvis as two
   separate members instead of lowav.
 - **Reproduce:** extract features (M20 + `extract_features.py --model dinov2_b --all-frames --frames 8`, `--model vjepa2_l
   --frames 16`), then `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member
