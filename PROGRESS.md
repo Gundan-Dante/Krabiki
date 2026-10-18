@@ -518,6 +518,17 @@ Choice rule: LOFO; a member must add > ~0.002 LOFO like for like and no dev top-
 Seed set 3-5 for the con member: weights move by at most one 0.1 transfer; the headline set keeps its weights (dev 25.5 / 55.9 / 4.0).
 Reproduce the headline: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:clip_b32_mid8_all:8 --max-seconds 1.5 --center-test --csls 5 --csls-stage member --experiment fin5_ctr_m5`.
 
+## STATUS (paused for relocation #2): low-level stimulus features, v2 selection (track-matching)
+- **Code (committed 2caaeca):** `src/eegmr/lowlevel.py`, `scripts/lowlevel_features.py` (AlexNet pooled maps, hand-crafted colour / frequency / edge / motion descriptors), CLIP block extractors 2/4/6/10 in `features.py`, `tests/test_lowlevel.py`. `ensemble.py`: exhaustive weight search now up to 7 members. The feature caches are local and gitignored; rebuild with
+  `python scripts/lowlevel_features.py alexnet-pool --pool 3 6 9`, `... alexnet-layers --layers c1 c3 c4 c5 --pool 6`, `... descriptors` and `python scripts/extract_features.py --model clip_b32_mid{4,6,10} --subset-only --frames 8`.
+- **Selection so far (training-only CV, `--cv-only`, headline settings: `--center-test --csls 5 --csls-stage member`; LOFO of the global strategy; CSVs `results/sel{1,2,3,4}_*_cv.csv`, `results/fin6x_*_cv.csv`):** base patch + V-JEPA + con + AlexNet conv2 (p6) = 0.23619 (headline final_csls was 0.21235; dev of that base 29.4 / 63.0 / 3.5);
+  + conv5 = 0.24257, + conv4 0.24061, + descriptors (`lowlevel_all`) 0.24128, CLIP depths / other pool sizes / colour, edge or motion alone <= +0.0006. 6-set {patch, V-JEPA, con, conv2, conv5, descriptors} = **0.25024**. Drop-one on that set: conv2 -0.0019 (below the 0.002 rule), con -0.0035, V-JEPA -0.0034, patch -0.0071, descriptors -0.0077, conv5 -0.0090.
+  Lean 5-set {patch, V-JEPA, con, conv5, descriptors} = **0.24838**; on top of it conv4 0.25036 (+0.0020) and CLIP block 10 0.25044 (+0.0021), both borderline.
+- **Not done:** sel4 for `alexnet_c3p6`, `alexnet_c1p6`, `lowlevel_freq`, `clip_b32`, `clip_b32_mid4/8` (cut off); the v2 test-phase runs (dev numbers of the lean set), `submissions/final_v2_csls` and `final_v2_nocsls`, M22 in MODEL_BACKLOG, DATA_SURVEY section 10, and the combined selection with Alikhan's CLAP / lowav caches (waiting for the coordinator).
+- **Resume:** rebuild the features if `features/` is missing, then for the lean set run (add `--member decw:alexnet_c4p6:8` and/or `--member decw:clip_b32_mid10_all:8` for the 6-7 member variants) the full grid with test phase, plain / centered x CSLS none / 5 / 10 per member:
+  `PYTHONPATH=src:scripts OMP_NUM_THREADS=8 python scripts/ensemble.py --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:alexnet_c5p6:8 --member decw:lowlevel_all:1 --max-seconds 1.5 --sim-cache results/similarity/_cache --center-test --csls 5 --csls-stage member --experiment v2_ctr_m5`
+  (drop `--center-test` / `--csls*` for the variants). Pick by LOFO with the complexity tie-break, then copy `submissions/<exp>_cv` to `submissions/final_v2_csls` / `final_v2_nocsls`.
+
 ## Next
 Superseded by §7 "Resume plan" at the top of this file.
 
