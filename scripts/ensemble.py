@@ -69,7 +69,8 @@ from eegmr.retrieval import csls
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
-HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs")
+HEADS = ("dec", "decw", "enc", "enc_noise", "con", "s3", "zs", "pdecw")
+# pdecw = subject-pooled whitened decoder: cache-only member, built by scripts/pool_member.py (needs --sim-cache)
 N_CANDIDATES = 102  # test set size: 1 target + 101 distractors
 STEPS = 10  # weights are multiples of 1 / STEPS
 TIE = 5e-4  # a simpler strategy within this much of the best leave-one-fold-out score is preferred
@@ -189,6 +190,8 @@ def encoder_matcher(head: str, window: slice) -> Matcher:
 
 def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slice) -> tuple[float | None, float | None]:
     """``(decoder alpha, encoder alpha)`` for this member (None where unused), chosen on the full training set."""
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     if m.head == "zs":
         return None, None
     enc = encoder_alpha(features, eeg, window) if m.head != "dec" else None
@@ -200,6 +203,8 @@ def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg
                              folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: range = range(3),
                              center: bool = False) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     dec_alpha, enc_alpha = alphas
 
     def e_val(trn: np.ndarray, val: np.ndarray) -> np.ndarray:
@@ -228,6 +233,8 @@ def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: n
                            measured: np.ndarray, window: slice, con_seeds: range = range(3),
                            center: bool = False) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
+    if m.head == "pdecw":
+        raise RuntimeError(f"{m.name}: pdecw is cache-only; build it with scripts/pool_member.py and pass that cache via --sim-cache")
     if center:
         measured = center_like(measured, eeg)
     if m.head == "zs":
