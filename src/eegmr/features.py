@@ -199,6 +199,8 @@ def _clip_b32_mid_gpu(device: str, block: int = 8) -> GpuEncoder:
 
 GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu,
                                                        "clip_l14": _clip_l14_gpu, "clip_b32_mid8": _clip_b32_mid_gpu}
+# Other residual-stream depths of the same CLIP B-32 tower (CLS token after block 2 / 4 / 6 / 10).
+GPU_ENCODERS.update({f"clip_b32_mid{b}": (lambda device, b=b: _clip_b32_mid_gpu(device, block=b)) for b in (2, 4, 6, 10)})
 
 
 def split_dinov2(n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR, name: str = "dinov2_b") -> list[Path]:
