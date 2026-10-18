@@ -89,3 +89,14 @@ value**, which I rated "low". Weak contrastive heads err differently from ridge,
 (0.75 ridge + 0.25 contrastive, w chosen by train-CV) improves on M8a on every seed. CLIP two-tower reaches
 15.9 ± 1.1 / 45.5 ± 0.5 (paired p ≤ 2e-6), and the effect repeats with DINOv2. The CV gain is small relative to the
 dev effect, so final weights should come from the shared N-member CV tool.
+
+## Stage 3 (nonlinear EEG encoders), feasibility test (M14)
+
+The prior for Stage 3 here was low: the literature's gains come from far more trials and from trial averaging. The test
+confirmed that **as standalone models, nonlinear heads don't beat ridge**. An MLP on the M12 input equals a linear head,
+EEGNet trails ridge clearly (train-CV 0.293 vs 0.232; dev 10.0 vs 14.7 top-1), and ShallowFBCSPNet is near chance because
+its power features discard the evoked waveform. Learning curves show the conv gap shrinking steadily with more data, so
+the limit is data, not the method. **As an ensemble member, though, EEGNet is the most complementary member found so
+far** (better on 6/6 subjects in train-CV, and significant on dev across 3 seeds). In the full five-member CV-weighted
+ensemble it lifts top-5 and median rank (50.2 / 5.4 vs 48.0 / 6.2, paired p = 3e-5) at a small top-1 cost. Making
+Stage 3 a primary model would need subject pooling or pretraining.
