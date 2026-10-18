@@ -19,18 +19,19 @@ subjects sub-01..04 have test labels (`tst_stim`) for validation only.
 Channels, in order: Pz P3 P7 O1 Oz O2 P4 P8 P1 P5 PO7 PO3 POz PO4 PO8 P6 P2. Already band-passed 0.1–40 Hz, blinks
 removed. These are the same 17 channels as the THINGS-EEG2 preprocessed release.
 
-## Code
-- `src/eegmr/`: `data` (loading, decimation), `features` (CLIP / DINOv2 / V-JEPA extractors, cache in `features/`),
-  `linear` (encoding), `decoding` (whitened decoder), `matching`, `contrastive`, `gpu` (torch ridge / CV helpers),
-  `evaluate`, `submission`.
-- `scripts/`: `extract_features.py`, `predict.py` (one model → submission), `ensemble.py` (track-matching), `train_*.py`.
-- Best single model: `PYTHONPATH=src python scripts/predict.py --head decoding --dec-whiten --features clip_b32 --frames 8
-  --max-seconds 1.5 --alpha-selection retrieval`
+## Code (branch `submission`: the organizer-facing layout)
+- `training/src/eegmr/`: `data` (loading, crop + decimation), `features` / `lowlevel` / `audio` (extractors, pinned
+  revisions, cache in `features/`), `decoding` (whitened decoder), `matching` (noise whitening), `contrastive`, `gpu`
+  (torch ridge / CV helpers), `retrieval` (CSLS), `evaluate`, `submission`.
+- `training/scripts/`: `ensemble.py` (members, CV weights, test), `pool_member.py` (subject pooling), extractors,
+  `export_bundle.py`. `bash training/run_pipeline.sh` runs the whole final pipeline (`JOBS=3` for parallel subjects).
+- `inference/`: numpy + scipy predictor and the v4b weights (`inference/model/`); reproduces `submissions/final_v4b_csls`.
+- `research/scripts/`: experiments and audit tooling not on the final path (e.g. single-model `predict.py`).
 
 ## Where things are
-- **Start with `HANDOFF.md`** (current state, final model, branches, open items).
-- `MODEL_BACKLOG.md`: every model and experiment with its numbers (M0…). The source of truth. Append, don't rewrite.
-- `PROGRESS.md` (current state), `IMPLEMENTATION_AUDIT.md`, `CONTRASTIVE_AUDIT.md`, `DATA_SURVEY.md`.
+- **Start with `docs/HANDOFF.md`** (current state, final model, branches, open items).
+- `docs/MODEL_BACKLOG.md`: every model and experiment with its numbers (M0…). The source of truth. Append, don't rewrite.
+- `docs/`: `PROGRESS.md`, `ARCHITECTURE.md`, `AUDIT.md`, `IMPROVEMENTS.md`, `DATA_SURVEY.md`, earlier audits.
 - Parallel work lives in git worktrees `../Krabiki-{matching,dinov2,viz,vjepa}` on branches `track-*`.
 
 ## Conventions

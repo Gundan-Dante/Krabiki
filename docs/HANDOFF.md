@@ -1,7 +1,7 @@
 # HANDOFF: state of the Krabiki EEG project (2026-10-18, end of day)
 
 For teammates and their agents picking this up. Read this first, then `CLAUDE.md` (rules and conventions),
-`PROGRESS.md` (detailed log), and `MODEL_BACKLOG.md` (every experiment M0–M28, the source of truth for numbers).
+`docs/PROGRESS.md` (detailed log), and `MODEL_BACKLOG.md` (every experiment M0–M28, the source of truth for numbers).
 
 ## 1. Where we stand
 - **Final submission:** `submissions/final_v4b_csls/sub-0{5,6}_ranked_candidate_list.npy` on branch **`track-proven`**.
@@ -56,20 +56,15 @@ the final (M14), motion gate (M23), pooling all six decoders (v4c, +0.0003), dro
 | `track-dinov2`, `track-vjepa`, `track-alexnet` | | feature extractors / earlier snapshots (merged into the above) |
 | `main` | | Azamat's separate track (time-staged experts, motion gate). Never force-push it. |
 
-**The branches are NOT merged into one yet.** The final model needs `track-matching` (ensemble.py) + `track-pool` (pool_member.py)
-+ the extractors; `track-matching` efb37e0 already contains the merges needed to reproduce v4b.
+**Consolidated (2026-10-18 night): branch `submission`** (worktree `../Krabiki-submission`) merges track-proven +
+track-matching (efb37e0) + track-audio and is the organizer-facing layout: `training/` (package, final-path scripts,
+`run_pipeline.sh`), `inference/` (numpy + scipy predictor + the v4b weights), `research/`, `docs/`. Use it for anything new.
 
 ## 5. Reproduce
-- **Fast (inference from saved weights, CPU, seconds):** `bundle/krabiki_final_v4b_bundle.zip` (287 MB, local only, gitignored; ask
-  Kanat for the file). `python <bundle>/infer_bundle.py --bundle <bundle> --root <eeg-mind-reading-challenge> --subjects 5 6 --out out`
-  reproduces `final_v4b_csls` bit-for-bit (verified twice). numpy + scipy only.
-- **Full rerun (GPU):** extract features (`scripts/extract_features.py` for clip_b32 / dinov2_b `--all-frames` / vjepa2_l / alexnet;
-  `scripts/lowlevel_features.py` for AlexNet conv5 pooling + descriptors; `scripts/extract_audio.py` for clap / lowlevel AV, needs
-  `av==18.1.0`), build the pooled members with `scripts/pool_member.py` (track-pool), then on track-matching:
-  `PYTHONPATH=src:scripts python scripts/ensemble.py --member pdecw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member
-  con:clip_b32:two_tower_d256 --member pdecw:alexnet_c5p6:8 --member decw:lowlevel_all:1 --member decw:clap_all:1 --member
-  pdecw:lowav_all:1 --max-seconds 1.5 --sim-cache results/similarity/_cache --center-test --csls 5 --csls-stage member --experiment v4b_ctr_m5`
-  (the pdecw entries come from pool_member.py caches; see PROGRESS.md "FINAL v4" on track-matching).
+- **Fast (CPU, seconds):** `python inference/predict.py --data-root <eeg-mind-reading-challenge> --out out` on branch `submission`
+  reproduces `submissions/final_v4b_csls` bit-for-bit (numpy + scipy only).
+- **Full rerun (GPU):** `bash training/run_pipeline.sh` on branch `submission` (stages features | decw | pool | ensemble |
+  export | verify; `JOBS=3` runs subjects in parallel). See `training/README.md`.
 
 ## 6. Rules and decisions you must keep
 - Never train on test data. Dev labels (sub-01..04 `tst_stim`) are for validation only. Select by train-CV (KFold seed 0); confirm on
