@@ -10,6 +10,9 @@
 #   WORK      similarity caches, logs, outputs    (default: <repo>/work)
 #   PY        Python 3.11 interpreter with training/requirements.txt installed (default: python)
 #   SUBJECTS  subjects to fit                     (default: "1 2 3 4 5 6"; the weight search needs all six)
+#   JOBS      subjects processed in parallel in the decw / pool / ensemble stages (default: 1). Every subject's
+#             members depend only on that subject's data (pooling: the others' TRAINING data), so the caches and
+#             the outputs are identical for any JOBS; 3 fits an 8 GB GPU.
 # Needs one CUDA GPU (8 GB is enough); everything also runs on CPU, much slower.
 set -euo pipefail
 
@@ -20,6 +23,7 @@ FEATURES=$(realpath -m "${FEATURES:-$REPO/features}")
 WORK=$(realpath -m "${WORK:-$REPO/work}")
 PY=${PY:-python}
 SUBJECTS=${SUBJECTS:-"1 2 3 4 5 6"}
+JOBS=${JOBS:-1}
 CACHE=$WORK/similarity_cache
 EXP=v4b_ctr_m5
 export PYTHONPATH="$HERE/src:$HERE/scripts${PYTHONPATH:+:$PYTHONPATH}"
@@ -34,6 +38,21 @@ MEMBERS=(pdecw:dinov2_b_patch_all decw:vjepa2_l_all:16 con:clip_b32:two_tower_d2
 POOLED=(dinov2_b_patch_all:8 alexnet_c5p6:8 lowav_all:1)   # features of the subject-pooled members
 
 log() { echo "[$(date +%T)] $*"; }
+
+per_subject() {  # per_subject NAME CMD...: run CMD once per subject (appending --subjects S), JOBS at a time
+  local name=$1; shift
+  if [ "$JOBS" -le 1 ]; then "$@" --subjects $SUBJECTS; return; fi
+  local threads=$(( $(nproc) / JOBS )); [ $threads -gt 8 ] && threads=8; [ $threads -lt 1 ] && threads=1
+  local pids=() s
+  for s in $SUBJECTS; do
+    while [ "$(jobs -rp | wc -l)" -ge "$JOBS" ]; do wait -n; done
+    OMP_NUM_THREADS=$threads MKL_NUM_THREADS=$threads OPENBLAS_NUM_THREADS=$threads \
+      "$@" --subjects $s > "$WORK/log_${name}_sub-$s.txt" 2>&1 &
+    pids+=($!)
+  done
+  local rc=0 p; for p in "${pids[@]}"; do wait "$p" || rc=1; done
+  [ $rc -eq 0 ] || { echo "per-subject $name failed, see $WORK/log_${name}_sub-*.txt"; return 1; }
+}
 member_args() { for m in "$@"; do printf -- "--member\n%s\n" "$m"; done; }
 
 stage_features() {  # frozen public models + hand-crafted descriptors, one cache per feature set (GPU, ~1 h)
@@ -50,20 +69,25 @@ stage_features() {  # frozen public models + hand-crafted descriptors, one cache
 stage_decw() {  # per-subject decoder alphas (and CV fold matrices) of the features that get pooled
   log "unpooled decoders of the pooled feature sets (alphas for pool_member.py)"
   local specs=(); for f in "${POOLED[@]}"; do specs+=("decw:$f"); done
-  (cd "$WORK" && $PY "$HERE/scripts/ensemble.py" $(member_args "${specs[@]}") "${FLAGS[@]}" "${IO[@]}" \
-     --subjects $SUBJECTS --cv-only --experiment pool_alphas)
+  (cd "$WORK" && per_subject decw $PY "$HERE/scripts/ensemble.py" $(member_args "${specs[@]}") "${FLAGS[@]}" "${IO[@]}" \
+     --cv-only --experiment pool_alphas)
 }
 
 stage_pool() {  # subject-pooled decoders: own training trials + the other subjects' training trials at weight lambda
   for spec in "${POOLED[@]}"; do
     log "pooled member ${spec%:*}"
-    $PY "$HERE/scripts/pool_member.py" --features "${spec%:*}" --frames "${spec#*:}" --decw-cache "$CACHE" \
-      --cache "$CACHE" --subjects $SUBJECTS "${IO[@]}"
+    per_subject "pool_${spec%:*}" $PY "$HERE/scripts/pool_member.py" --features "${spec%:*}" --frames "${spec#*:}" \
+      --decw-cache "$CACHE" --cache "$CACHE" "${IO[@]}"
   done
 }
 
 stage_ensemble() {  # remaining members, CV weight search, test similarities, CSLS, ranked lists
   log "ensemble $EXP"
+  if [ "$JOBS" -gt 1 ]; then  # fill the member caches (CV folds + test) per subject in parallel; the run below reads them
+    local unpooled=(); for m in "${MEMBERS[@]}"; do [[ $m == pdecw:* ]] || unpooled+=("$m"); done
+    (cd "$WORK" && per_subject members $PY "$HERE/scripts/ensemble.py" $(member_args "${unpooled[@]}") "${FLAGS[@]}" \
+       "${IO[@]}" --experiment members_only --results members_only.csv)
+  fi
   (cd "$WORK" && $PY "$HERE/scripts/ensemble.py" $(member_args "${MEMBERS[@]}") "${FLAGS[@]}" "${IO[@]}" \
      --csls 5 --csls-stage member --experiment $EXP)
   log "ranked lists: $WORK/submissions/${EXP}_cv/"
