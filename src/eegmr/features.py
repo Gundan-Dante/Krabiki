@@ -133,7 +133,43 @@ def _clip_b32_gpu(device: str) -> GpuEncoder:
     return run
 
 
-GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu}
+def _dinov2_b_gpu(device: str) -> GpuEncoder:
+    """timm ``vit_base_patch14_dinov2.lvd142m`` (DINOv2 ViT-B/14) at 224 px (16 x 16 patches), ImageNet mean/std.
+
+    Returns ``[CLS token, mean of patch tokens]`` from the final normed layer, i.e. 768 + 768 = 1536 dims per frame.
+    Use :func:`split_dinov2` to get the two halves as separate feature caches.
+    """
+    import timm
+
+    model = timm.create_model("vit_base_patch14_dinov2.lvd142m", pretrained=True, img_size=224).eval().to(device)
+    cfg = model.pretrained_cfg
+    mean = torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1)
+    std = torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1)
+    n_prefix = model.num_prefix_tokens
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        tokens = model.forward_features((x.clamp(0, 1) - mean) / std)  # (B, prefix + 256, 768)
+        return torch.cat([tokens[:, 0], tokens[:, n_prefix:].mean(dim=1)], dim=1).float()
+
+    return run
+
+
+GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu}
+
+
+def split_dinov2(n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR, name: str = "dinov2_b") -> list[Path]:
+    """Split ``<name>_all_f<n>.npz`` ([CLS, patch mean]) into ``<name>_cls_all_f<n>`` and ``<name>_patch_all_f<n>``."""
+    with np.load(feature_path(f"{name}_all", n_frames, feature_dir)) as f:
+        ids, mean, frames = f["ids"], f["mean"], f["frames"]
+    half = mean.shape[1] // 2
+    outs = []
+    for part, cols in (("cls", slice(None, half)), ("patch", slice(half, None))):
+        out = feature_path(f"{name}_{part}_all", n_frames, feature_dir)
+        np.savez(out, ids=ids, mean=mean[:, cols], frames=frames[..., cols])
+        outs.append(out)
+    return outs
 
 
 class _VideoFrames(torch.utils.data.Dataset):
