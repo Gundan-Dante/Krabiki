@@ -98,6 +98,66 @@ separate track, left untouched. The two WIP commits are local.
    final submission from saved per-subject weights (minutes) with a documented full retrain; README; tests. Decide CSLS
    on / off from the organizers' answer.
 
+## 8. Method notes
+
+### 8.1 Two different "whitenings" (don't confuse them)
+**(a) Feature whitening: the bug (removed).** The encoding pipeline was scaler → PCA → **scaler** → ridge. The second
+scaler gives every PCA component unit variance, so ZᵀZ = n·I and all singular values are equal (sub-01: every s² = 968).
+Ridge's shrinkage s / (s² + α) then becomes one constant: alpha rescales all predictions equally instead of shrinking
+weak, noisy directions more. Correlation / cosine matching ignores scale, so **alpha had no effect at all** (flat CV
+curve). Removing the second scaler: 4.2 / 16.9 → 5.4 / 21.1 (p = 2e-13). Kept only as `--whiten` for reproducibility.
+**Rule:** never whiten or standardize the *inputs of a ridge* after PCA. Ridge needs the variance differences.
+
+**(b) EEG noise whitening: the gain (adopted).** EEG noise is shared across neighbouring electrodes. From the training
+data only: fit the encoding model with 5-fold out-of-fold predictions, take the residuals (EEG it can't explain),
+estimate one 17 × 17 Ledoit-Wolf noise covariance Σₜ **per timepoint** in the window, and multiply the EEG at each
+timepoint by Σₜ^-1/2. Shared noise becomes uncorrelated and equal-sized, so stimulus-specific signal stands out.
+- On the encoder (matching by negative Euclidean distance after whitening): 5.4 / 21.1 → 8.8 / 31.6 (M5).
+- On the decoder input (`--dec-whiten`): 14.0 / 36.0 → 14.7 / 42.2 (M8a). Decoder alpha rises to 1e3–3e3 (nested CV).
+- In CV, the whiteners are re-estimated inside each outer fold's training part, never from scored trials.
+
+### 8.2 The reverse direction (decoding), and why cosine
+- **Encoding** (the organizers' approach): video features → predict 17 × 300 EEG values → correlate with the measured EEG.
+  It compares in EEG space, where most of the 935+ values are noise.
+- **Decoding** (ours): X = EEG window 50–600 ms flattened (17 ch × 55 samples = 935 values), noise-whitened and
+  standardized with training stats. Y = the video's feature vector (e.g. CLIP 512-d), standardized with training-video
+  stats. Ridge = one linear map 935 → 512, solved for all alphas at once via one SVD. At test time a recording
+  becomes a *predicted feature vector*, compared by **cosine** with the 102 candidates' (standardized) feature vectors.
+- **Why cosine:** ridge shrinks predictions toward zero, so their length is meaningless; only the direction ("what kind
+  of content") matters. Standardizing the candidates with training stats already removes the shared mean.
+- **Alpha** is chosen by *retrieval CV*: hold out 1/5 of training videos, rank them among each other with the same
+  cosine matching, and keep the alpha with the best mean percentile rank. This optimizes ranking, not squared error.
+- Shuffled-pair controls (train on permuted EEG ↔ video pairs) give chance for every decoder, so there's no leakage.
+
+### 8.3 Recipe: adding any new model to the bundle
+For a new **feature model** (image / video / audio encoder):
+1. **Rules check first:** public, released before 2026-10-16, license recorded. Training data must not include the
+   1,102 Moments-in-Time clips (EMD / BMD / Algonauts family, models like TRIBE v2). Pin the exact checkpoint / revision.
+2. **Extract once, cache:** fixed frame indices (`read_frames` segment centres) or every frame via `--all-frames`, GPU,
+   fp16 if the fp16 vs fp32 cosine is ≥ 0.999. Save `features/<name>_f<n>.npz` with `ids`, `mean` and optionally
+   `frames`, so `load_features(name, n, ids)` works. Prefer the descriptor that keeps the gist (DINOv2 patch mean beat
+   CLS). Intermediate layers are worth one test.
+3. **Single decoder:** `scripts/predict.py --head decoding --dec-whiten --features <name> --frames <n> --max-seconds 1.5
+   --alpha-selection retrieval --subjects 1 2 3 4 5 6`. Compare per-subject train-CV with CLIP decw (0.192 / 0.206 /
+   0.251 / 0.219 / 0.247 / 0.277).
+4. **Diversity check:** RSA (Spearman of video × video similarity) vs the existing members. Below ~0.6 means it's likely
+   complementary (V-JEPA 0.48–0.50); ~0.7+ means largely redundant (DINOv2-patch vs CLIP 0.72).
+5. **Ensemble:** `scripts/ensemble.py --member decw:<name>[:<n>]` together with the current members. Weights come from
+   the exhaustive simplex search (N ≤ 5) on train-CV; the strategy (best single / equal / global / per-subject) comes from
+   leave-one-fold-out. **Adopt only if** LOFO improves and the paired dev Wilcoxon agrees in direction. If CV and dev
+   disagree, trust the conservative side (M8b).
+6. **Post-processing:** test-set centering (rule 5, small gain) and CSLS (only if the organizers approve).
+7. **Reproducibility:** pin the dependency in requirements.txt (dry-run pip, never touch torch / numpy / scipy /
+   sklearn), save per-subject weights, record the model in MODEL_BACKLOG.md.
+
+For a new **trained head** (contrastive, EEGNet, MLP): use the same whitened inputs and the same per-fold whiteners as
+decw, early stopping on an inner split of the training videos, average 3+ seeds (SGD varies by ±1–2 pts top-1), and add it
+as a `con:`-type member. So far such heads have helped as ensemble members, not alone.
+
+Lessons that transfer: bigger isn't better (CLIP ViT-L-14 < B-32: EEG carries gist); more frames don't help image
+models (frames within a clip are near-identical); separate decoders + score fusion beat concatenated targets; never
+select on dev.
+
 ---
 
 # Detailed logs (track-proven)
