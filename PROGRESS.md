@@ -334,6 +334,26 @@ E[top-1] 5.95% -> 6.19%. Better on all 6 subjects at scale 1 (by 0.0004-0.0033) 
 **Verdict: NO-GO for neural pretraining on THINGS-EEG2 (Steps 1-2).** The linear transfer is real but too weak to matter (the shared signal is mostly early visual; the stimulus domain differs: 100 ms object images in a 5 Hz RSVP stream vs 3-s dynamic scenes with sound), and a stronger encoder would raise within-THINGS accuracy, not close the domain gap.
 Possible leftover, not run: restrict both sides to the first ~250 ms; more THINGS subjects (the linear fit is already data-saturated at 132k trials for 935 weights).
 
+## V-JEPA 2 as an ensemble member (track-matching)
+Cached features `features/vjepa2_l_all_f16.npz` (V-JEPA 2 ViT-L, from track-vjepa); single `decw:vjepa2_l_all:16`: train-CV (E1+E5)/2 0.1518, dev 13.0 / 39.5 / 7.2. Same CV-weighted tool and rules as before (5 folds seed 0, nested whiteners and matchers,
+con member = mean of row-z similarities over seeds 0-2, strategy by 5-decimal leave-one-fold-out).
+
+| Run | Members (order as listed) | CV-chosen weights | LOFO: best single / equal / global / per-subject | strategy | dev top-1 / top-5 / median | vs M13 (better/worse, p) | vs M11 (better/worse, p) |
+|---|---|---|---|---|---|---|---|
+| M11 | decw clip + decw patch | 0.5 / 0.5 | 0.161 / 0.172 / 0.172 / 0.171 | equal | 15.2 / 45.3 / 7.2 | – | – |
+| M13 (b) | decw clip + decw patch + con clip two-tower | 0.1 / 0.6 / 0.3 | 0.1609 / 0.1750 / 0.1807 / 0.1781 | global | 17.4 / 46.8 / 6.0 | – | 185 / 103, 9e-7 |
+| a | decw clip + decw patch + decw V-JEPA | 0.4 / 0.3 / 0.3 | 0.16091 / **0.18512** / 0.18402 / 0.18385 | equal | 16.2 / 44.4 / 6.9 | 153 / 161, 0.34 | 178 / 126, 1e-4 |
+| **b** | decw clip + decw patch + decw V-JEPA + con clip two-tower | **0.2 / 0.3 / 0.3 / 0.2** | 0.16091 / 0.18925 / **0.19243** / 0.19153 | global | **20.8 / 48.0 / 6.2** | 166 / 127, 0.028 | 207 / 99, 2e-10 |
+
+Run b per subject, dev top-1 / top-5 / median: sub-01 23.5 / 54.9 / 5.0, sub-02 20.6 / 48.0 / 6.0, sub-03 15.7 / 42.2 / 8.0, sub-04 23.5 / 47.1 / 6.0. Vs run a: 184 / 81, p = 9e-10; vs decw clip alone (14.7 / 42.2 / 7.5): 224 / 111, p = 7e-13.
+Per-subject weights (run b): dev 20.6 / 49.8 / 5.6, but LOFO 0.19153 < global, so the global weights stand. Single members in run b (CV E1+E5)/2: clip 0.1550, patch 0.1609, V-JEPA 0.1518, con two-tower 0.1477.
+
+**Reading.** V-JEPA adds as a third *decoder* member: LOFO 0.172 (M11) -> 0.185 (a), and with the contrastive head 0.1807 (M13) -> 0.1924 (b); the weights spread over all four members (the CLIP decoder keeps 0.2). The CV
+prefers b over M13 by 0.012 (LOFO), and dev agrees in direction (+3.4 pts top-1, p = 0.028 per trial vs M13), so b is the new CV-best combo. Run a alone is a tie with M13 on dev (p = 0.34).
+Submissions (validated: 102 x 102 int64, rows are permutations of the test IDs; local): `submissions/ens_vj_b_cv/` (CV-best), also `ens_vj_a_cv/`.
+Reproduce b: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --experiment ens_vj_b`
+(CV tables `results/ens_vj_{a,b}_cv.csv`).
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
