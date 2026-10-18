@@ -7,6 +7,7 @@ by cross-validation on training data ranks the candidates.
 
 | | |
 |---|---|
+| **Report** | [`REPORT.md`](REPORT.md): the final model, its algorithms and how it was validated |
 | **Predictions** | [`submissions/final_v4b_csls/`](submissions/final_v4b_csls/): `sub-05_ranked_candidate_list.npy`, `sub-06_ranked_candidate_list.npy` (int64, 102 × 102, rows in the original test order, values = video IDs 1001–1102) |
 | **Dev score** (test sets of sub-01..04, labels used only for scoring) | **33.8% top-1 / 68.1% top-5**, median rank 2.6 (chance 1.0% / 4.9% / 51.5). Per subject: 35.3/71.6, 36.3/68.6, 26.5/65.7, 37.3/66.7 |
 | **Reproduce the predictions** (CPU, numpy + scipy, seconds) | [`inference/`](inference/): `python inference/predict.py --data-root <eeg-mind-reading-challenge> --out out/` |
