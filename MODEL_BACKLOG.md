@@ -423,3 +423,13 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   ridge, which only subject pooling (about 5.6k trials) or external pretraining could approach. **Pooling is the
   missing ingredient**, and it's paused by the user. Not done: the DINOv2 repeat, and `s3` combined with `--center-test`
   in the final grid (krabiki-51 will rerun the selection with s3 in the member set).
+
+## M23: Motion gate (Azamat, origin/main d9f694f), tested by krabiki-2f: not adopted
+- **What:** per candidate video, image members' row-z scores × exp(−β·m) and video members' × exp(+β·m), with m = the z-scored log
+  motion of the video (frame differences at 64×64, video files only), optional final column-z; β chosen by training CV.
+- **Test:** on the headline final_csls (fin5_ctr_m5), gate applied on top of the CV member weights and after per-member CSLS,
+  using krabiki-51's cached fold / test matrices. β=0 with col-z off reproduces the headline exactly.
+- **Result:** train-CV is best at β=0, getting monotonically worse in both directions ((E1+E5)/2: −0.5 0.177, −0.25 0.202, 0 0.212,
+  +0.25 0.199, +0.5 0.165). β=0 is picked on 6/6 subjects (pct rank) and 5/6 ((E1+E5)/2). Column-z alone is worse by CV (0.2099 vs
+  0.2123); its dev diagnostic is n.s. (24.8 / 58.6, p = 0.26). **Not adopted.** The CV member weights and the low-level members
+  already capture the image / video / motion balance.
