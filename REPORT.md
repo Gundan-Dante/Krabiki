@@ -34,10 +34,17 @@ EEG recording (17 ch x 1500 samples, 500 Hz)
 ```
 
 ### 2.1 EEG preprocessing
-- Crop to 0–1.5 s, then FIR decimation to 100 Hz; window 50–600 ms (17 channels × 55 samples = 935 values).
-- **Test-set centering:** the test recordings' own mean is replaced by the training mean (unsupervised normalization).
-- **Noise whitening:** per time point, the 17 channels are multiplied by Σ^(−1/2) of a Ledoit-Wolf noise covariance
-  estimated from training residuals. This decorrelates noise shared across electrodes.
+- **Crop and decimate to 100 Hz; window 50–600 ms.** The recording is cropped to 0–1.5 s before filtering (no later
+  samples leak in) and decimated with a zero-phase FIR filter. The decoders read 17 channels × 55 time points = 935
+  values. Information peaks at 150–250 ms, and cross-validation preferred this window over wider or later ones for every
+  subject.
+- **Test-set centering.** The mean of a subject's 102 test recordings is replaced by its training mean. The test
+  recordings are cleaner than single training trials (likely repeat-averaged) and their average response is shifted;
+  centering removes that offset. It uses no labels (unsupervised normalization, rule 5).
+- **Noise whitening.** EEG noise is shared by neighbouring electrodes. From training data only, we take the residuals
+  of an out-of-fold encoding model (video features → EEG) and estimate, for each time point, a 17 × 17 Ledoit-Wolf noise
+  covariance Σₜ. Multiplying each time point by Σₜ^(−1/2) makes that noise uncorrelated, so the stimulus-related signal
+  stands out (+6 points top-5 for a single decoder).
 
 ### 2.2 Video descriptions (frozen public models, nothing fine-tuned)
 
@@ -66,12 +73,20 @@ of the subject's training videos, for both the training targets and the 102 cand
 | F | 6 CLAP | whitened ridge decoder | 0.1 |
 | G | 7 low-level AV | subject-pooled whitened ridge decoder | 0.2 |
 
-- **Whitened ridge decoder:** ridge regression from the whitened EEG to the video's feature vector; candidates are
-  scored by cosine similarity. The penalty is chosen per subject by cross-validation on training videos.
-- **Subject pooling** (A, D, G): the decoder also uses the other five subjects' **training** recordings at a small
-  weight λ (0.05–0.1, chosen per subject by cross-validation in which their recordings of held-out videos are removed).
-- **Contrastive head** (C): two linear towers (EEG → 256, CLIP → 256) trained with InfoNCE and early stopping;
-  3 seeds averaged.
+- **Whitened ridge decoder (B, E, F, and the base of A, D, G).** Ridge regression maps the whitened EEG to the video's
+  standardized feature vector, and each candidate is scored by the cosine between the predicted and its real vector.
+  Decoding into a feature space beats the organizers' direction (predicting EEG from video): the comparison happens in a
+  clean space instead of in noisy EEG (14.0 % vs 5.4 % top-1 with the same CLIP features). The ridge penalty is chosen per
+  subject and member by retrieval cross-validation on training videos.
+- **Subject pooling (A, D, G).** Each subject has only 850–972 noisy training trials. The pooled decoder also learns
+  from the other five subjects' **training** recordings at a small weight λ, each whitened with its own noise model.
+  λ is chosen per subject (0.05–0.1) by cross-validation in which the other subjects' recordings of held-out videos are
+  removed, so it stays zero-shot. Full pooling (λ = 1) hurts because brains differ; a small share helps every subject,
+  the weakest most.
+- **Contrastive head (C).** Two linear towers map the EEG and the CLIP vector into a shared 256-d space and are trained
+  with a symmetric InfoNCE loss (learnable temperature) to rank the true video first, with early stopping on held-out
+  training videos. Three seeds are averaged. Weak alone, it makes different errors from the ridge decoders, which is
+  why it earns a place in the ensemble.
 
 ### 2.4 Combining the members
 1. **CSLS hub correction** (per member, k = 5): `2·S − r_rec − r_cand`, where `r_cand[j]` is the mean of candidate j's 5
