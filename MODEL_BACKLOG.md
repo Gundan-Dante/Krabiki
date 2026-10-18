@@ -444,3 +444,30 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   0.885 with whole-clip motion). Train-CV (E1+E5)/2 peaks at β=0 for both motion measures (0.21234). The best direction
   (V-JEPA on static clips, β=−0.25) gains ≤ 0.0001 pct rank. Per-subject best β has both signs, so the ≥5/6 same-sign rule
   fails. **Not adopted:** the CV member mix is already near-optimal per candidate, and motion carries no exploitable gating signal.
+
+## M26: Subject pooling, single-member test (krabiki-75, diagnostic)
+- **What:** whitened decoder on DINOv2-patch f8. For target subject t: own training trials (weight 1) + the other 5 subjects'
+  training trials (weight λ), each subject noise-whitened with its OWN whiteners (enc alpha 1e4) and standardized with its own
+  stats; weighted ridge (rows × √w), targets standardized with the target's training-video stats. (λ, α) chosen per subject by
+  train-CV (mean of E[top1], E[top5] of 102). **Zero-shot CV:** other subjects' recordings of the target's held-out videos
+  are removed from training. No centering / CSLS.
+- **Train-CV (E1+E5)/2, λ=0 → best:** sub-01 0.213 → 0.220 (λ 0.1), sub-02 0.186 → 0.195 (0.05), sub-03 0.149 → 0.159 (0.1),
+  sub-04 0.180 → 0.187 (0.1), sub-05 0.145 → 0.151 (0.05), **sub-06 0.118 → 0.135 (λ 0.2, +14%)**. λ=1 hurts everywhere, so
+  a small share of foreign data helps, and the weakest subject benefits most and wants the most.
+- **Dev (single member):** 12.7 / 41.7 → 13.0 / 41.7, better 145 / worse 123, p = 0.11 (positive direction, n.s.).
+- **Status:** promising for sub-05/06. Next: a pooled member type in the ensemble tool (`pdecw`), applied to DINOv2-patch,
+  AlexNet conv5 and lowav first, then rerun the v3 selection.
+- Script: krabiki-75 scratchpad `pool_test.py`.
+
+## M27: Member overlap in v3 + drop-contrastive check (krabiki-75)
+- **Score overlap** (correlation of row-z, centered test similarity matrices, mean over 6 subjects): DINOv2-patch ↔ V-JEPA
+  **0.73**, DINOv2-patch ↔ contrastive (CLIP) **0.69**, V-JEPA ↔ contrastive 0.58, V-JEPA / DINOv2 ↔ AlexNet conv5
+  0.56 / 0.55, AlexNet conv5 ↔ descriptors 0.53, all pairs with CLAP or lowav 0.17–0.41 (the most unique members).
+  Feature-space RSA shows the same pattern (DINOv2 ↔ CLIP 0.64; audio / low-level spaces ≤ 0.33).
+- **Drop the contrastive head** (6 members, center-test + CSLS 5 per member, exhaustive weights, cached members, 2 min):
+  LOFO 0.2774 → 0.2723 (**−0.005**, above the 0.002 rule), dev 32.4 / 66.7 → 29.9–31.1 / 64.5. **The contrastive head stays.**
+  A high score overlap doesn't make a member redundant: its different training objective still adds complementary signal.
+- **v3 headline (krabiki-51 run v3_ctr_m5, read from its log; the official entry M25 is by 51):** 7 members (DINOv2-patch,
+  V-JEPA, contrastive, AlexNet conv5 p6, descriptors, CLAP, lowav), per-subject CV weights, LOFO 0.2774, dev 32.4 / 66.7 /
+  3.0 (global weights 33.6 / 66.9). vs final_csls: 264 better / 80 worse, p = 6e-26. For sub-05/06, CV shifts weight to
+  lowav (0.3) and gives the contrastive head 0.
