@@ -24,9 +24,9 @@ and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, def
    chosen on the full training set by CV. For a weight vector the criteria are the mean percentile rank, the expected
    top-1 and the expected top-5 of 102 candidates (hypergeometric: the exact chance of the true video being in the top k
    if 101 distractors were drawn from the fold).
-2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 5 (at most 1001
+2. Weights are picked by the mean of expected top-1 and top-5: exhaustively on the simplex lattice for N <= 6 (at most 3003
    points; the earlier greedy search used for N = 4 could stop in a local optimum), by steepest-ascent pair transfers (0.1
-   from one member to another) for N > 5. Strategies compared by a
+   from one member to another) for N > 6. Strategies compared by a
    leave-one-fold-out check (weights picked on 4 folds, scored on the 5th): best single member, equal weights, one global
    weight vector (all subjects), and one weight vector per subject. The simplest strategy within 0.0005 of the best wins.
 3. Test: members are fit on all training trials, the chosen weights blend the test similarities, the ranked lists are
@@ -286,7 +286,7 @@ def search(ev: Evaluator, subjects: list[int], folds: list[int], n: int) -> Weig
     def objective(w: Weights) -> float:
         return float(np.mean([avg_criterion(ev.criteria(s, folds, w)) for s in subjects]))
 
-    if n <= 5:
+    if n <= 6:
         cands = lattice(n)
         return cands[int(np.argmax([objective(w) for w in cands]))]
     singles = [tuple(STEPS if j == i else 0 for j in range(n)) for i in range(n)]
@@ -425,7 +425,7 @@ def main() -> None:
     print("CV-chosen strategy:", strategy)
 
     args.cv_out.parent.mkdir(parents=True, exist_ok=True)
-    cands = lattice(n) if n <= 5 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
+    cands = lattice(n) if n <= 6 else sorted({*single_vecs, equal_vec, w_global, *w_subject.values()})
     with args.cv_out.open("w", newline="") as fh:
         writer = csv.writer(fh)
         writer.writerow(["subject", "weights", "pct_rank", "exp_top1", "exp_top5", *[f"alphas_{m.name}" for m in members]])

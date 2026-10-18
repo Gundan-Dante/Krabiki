@@ -510,6 +510,14 @@ Reproduce b: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:cl
   `PYTHONPATH=src:scripts OMP_NUM_THREADS=8 python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --sim-cache results/similarity/_cache --experiment <name> [--csls 5 --csls-stage member] [--center-test] [--con-seed-start 3]`
   and optionally add `--member decw:clip_b32_mid8_all:8`; copy the CV-best CSLS variant's `submissions/<name>_cv` to `submissions/ens_vj_b_csls_cv`.
 
+## FINAL ensemble sets (track-matching, exhaustive weight search; supersedes the STATUS note above)
+Grid of 4 / 5 / 6 members x plain / centered x CSLS (none, k = 5, 10, after the blend or per member): `results/ens_final_summary.md` (LOFO, weights, dev, Wilcoxon vs the earlier M17 run b), CV tables `results/fin*_cv.csv`, driver commands as in the resume note (experiment names `fin{4,5,5s,6}_{plain,ctr}_{off,b5,b10,m5,m10}`; `5s` = M17 members + s3, `5` = + block-8, `6` = + both).
+**Headline (CSLS allowed by the organizers):** `submissions/final_csls/` = decw CLIP + decw DINOv2-patch + decw V-JEPA + con two-tower + decw CLIP block-8, weights 0.0 / 0.4 / 0.3 / 0.2 / 0.1, test-time centering, per-member CSLS k = 5: LOFO 0.21235, dev **24.0 / 57.1 / 4.2** (previous M17: 20.8 / 48.0 / 6.2, better 209 / worse 82, p = 3e-13).
+**Backup without CSLS:** `final_nocsls/` (adds s3 EEGNet; LOFO 0.19892, dev 19.1 / 50.0 / 5.5) and `final_nocsls_simple/` (no s3; 0.19522, 19.4 / 49.0 / 5.8). Alternative with s3 and CSLS: `final_csls_s3/` (LOFO 0.21445 via per-subject weights, dev 24.5 / 57.8 / 4.2, vs headline p = 0.24; not taken).
+Choice rule: LOFO; a member must add > ~0.002 LOFO like for like and no dev top-1/top-5 trade (block-8: +0.0038 with CSLS; s3: +0.0004 with CSLS, +0.0037 without). Per-member CSLS beats CSLS after the blend by 0.003-0.004 LOFO; k = 5 and 10 tie.
+Seed set 3-5 for the con member: weights move by at most one 0.1 transfer; the headline set keeps its weights (dev 25.5 / 55.9 / 4.0).
+Reproduce the headline: `PYTHONPATH=src:scripts python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256 --member decw:clip_b32_mid8_all:8 --max-seconds 1.5 --center-test --csls 5 --csls-stage member --experiment fin5_ctr_m5`.
+
 ## Next
 Superseded by §7 "Resume plan" at the top of this file.
 

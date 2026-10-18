@@ -321,7 +321,7 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
 ## M17: V-JEPA 2 in the CV-weighted ensemble (krabiki-51, branch `track-matching`): new CV-best combo
 - **Code/data:** `scripts/ensemble.py` (no change), features `features/vjepa2_l_all_f16.npz` from M16 (`decw:vjepa2_l_all:16`); CV tables `results/ens_vj_{a,b}_cv.csv`.
 - **Result:** V-JEPA adds as a third decoder member. (a) decw clip + patch + V-JEPA: CV weights 0.4 / 0.3 / 0.3, LOFO 0.18512 (equal), dev 16.2 / 44.4 / 6.9 (vs M11 p = 1e-4, vs M13 p = 0.34).
-  **(b) + con clip two-tower (3 seeds): CV-chosen global weights 0.2 / 0.3 / 0.3 / 0.2 (clip / patch / V-JEPA / con), LOFO 0.19243 (M13: 0.1807; M11: 0.172), dev 20.8 / 48.0 / 6.2.**
+  **(b) + con clip two-tower (3 seeds): CV-chosen global weights 0.2 / 0.3 / 0.3 / 0.2 (clip / patch / V-JEPA / con), LOFO 0.19243 (M13: 0.1807; M11: 0.172), dev 20.8 / 48.0 / 6.2.** *(Correction 2026-10-18: these four-member weights came from a greedy coordinate ascent that stopped in a local optimum; the exhaustive lattice search now used for up to 6 members gives 0.0 / 0.3 / 0.4 / 0.3, LOFO 0.19307, dev 20.1 / 50.2 / 5.5. See M17-final below.)*
 - **Dev, run b:** 20.8% top-1 / 48.0% top-5 / median 6.2 (M13 17.4 / 46.8 / 6.0: better 166 / worse 127, p = 0.028; M11 15.2 / 45.3 / 7.2: 207 / 99, p = 2e-10; run a: 184 / 81, p = 9e-10; decw clip alone: 224 / 111, p = 7e-13).
   Per-subject dev top-1: 23.5 / 20.6 / 15.7 / 23.5. Per-subject weights do not beat the global ones by LOFO (0.19153 vs 0.19243).
 - **Submissions:** `submissions/ens_vj_b_cv/` (CV-best, sub-05/06, validated, local), `ens_vj_a_cv/`.
@@ -423,3 +423,17 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   ridge, which only subject pooling (about 5.6k trials) or external pretraining could approach. **Pooling is the
   missing ingredient**, and it's paused by the user. Not done: the DINOv2 repeat, and `s3` combined with `--center-test`
   in the final grid (krabiki-51 will rerun the selection with s3 in the member set).
+
+
+## M17-final: exhaustive weight search, CSLS, test-time centering, block-8 and s3 members (krabiki-51, branch `track-matching`)
+- **CSLS is allowed by the organizers (2026-10-18).** `ensemble.py` flags: `--csls K --csls-stage {blend,member}`, `--center-test` (replace the scored set's own mean EEG by the training mean before whitening; label-free test normalization), `--sim-cache DIR`,
+  exhaustive simplex search for up to 6 members (3003 points). Summary of the whole grid: `results/ens_final_summary.md`; CV tables `results/fin*_cv.csv`; logs/commands in PROGRESS.md.
+- **Rule for choosing:** LOFO (leave-one-fold-out of (E1+E5)/2, strategy picked inside) decides; a member (block-8 CLIP CLS `decw:clip_b32_mid8_all:8`, s3 EEGNet) is kept only if it adds more than ~0.002 LOFO like for like (same weight strategy) and dev shows no top-1/top-5 trade.
+- **Per-member CSLS beats CSLS after the blend** in every comparison (by 0.003-0.004 LOFO); k = 5 and k = 10 are tied (<= 0.0005). Test-time centering: LOFO +0.0008 with CSLS (members 5), tie without.
+- **Final sets (sub-05/06 validated, local `submissions/`):**
+  - **`final_csls/` (headline):** decw CLIP, decw DINOv2-patch, decw V-JEPA, con CLIP two-tower (3 seeds), decw CLIP block-8; weights 0.0 / 0.4 / 0.3 / 0.2 / 0.1 (global), test-time centering, CSLS k=5 per member. LOFO 0.21235, dev **24.0 / 57.1 / 4.2** (M17 reference 20.8 / 48.0 / 6.2: better 209 / worse 82, p = 3e-13).
+  - `final_csls_s3/` (alternative): + s3 EEGNet, per-subject weights; LOFO 0.21445 (global-weights 0.21275, i.e. +0.0004 like for like), dev 24.5 / 57.8 / 4.2; vs the headline 122 / 100, p = 0.24. Not taken (gain only through per-subject weights, not significant, extra model).
+  - **`final_nocsls/` (backup):** + s3, no centering, global weights 0.0 / 0.3 / 0.2 / 0.1 / 0.2 / 0.2 (clip / patch / V-JEPA / con / block-8 / s3); LOFO 0.19892, dev 19.1 / 50.0 / 5.5 (M17 reference: 163 / 124, p = 2e-4). `final_nocsls_simple/`: no s3, LOFO 0.19522, dev 19.4 / 49.0 / 5.8.
+- **Other rows (LOFO / dev):** 4 members plain 0.19307 / 20.1, 50.2; 4 members + CSLS per member k=5 0.20735 / 24.5, 56.6; 5 members plain 0.19522; 5 members centered 0.19525 / 20.3, 50.5; 4 members centered + CSLS 0.20855.
+- **Seed robustness (con seeds 3-5, exhaustive search):** the weights move by at most one 0.1 transfer (4 members 0.0/0.3/0.4/0.3 -> 0.0/0.4/0.3/0.3; 5 members plain 0.0/0.4/0.3/0.2/0.1 -> 0.0/0.3/0.3/0.3/0.1; the headline set keeps exactly 0.0/0.4/0.3/0.2/0.1, dev 25.5 / 55.9 / 4.0 vs 24.0 / 57.1 / 4.2, p = 0.37).
+- **Caveats:** alphas are chosen on the full training set (not nested); the CSLS in the CV is applied to each held-out fold (~200 recordings) while the test set has 102; dev (4 x 102 trials) was never used for selection.
