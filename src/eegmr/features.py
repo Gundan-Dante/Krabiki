@@ -156,7 +156,49 @@ def _dinov2_b_gpu(device: str) -> GpuEncoder:
     return run
 
 
-GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu}
+CLIP_L14_PRETRAINED = "laion2b_s32b_b82k"  # HF laion/CLIP-ViT-L-14-laion2B-s32B-b82K, revision 1627032197142fbe2a7cfec626f4ced3ae60d07a (2022-09-14, MIT)
+
+
+def _clip_l14_gpu(device: str) -> GpuEncoder:
+    """open_clip ViT-L-14 / laion2b_s32b_b82k image embedding (768-d), fp16 on GPU, preprocessing from the model's own
+    config (bicubic resize to 224, its mean/std). The videos are square, so resize + centre crop is a plain resize."""
+    import open_clip
+
+    model = open_clip.create_model_and_transforms("ViT-L-14", pretrained=CLIP_L14_PRETRAINED)[0].eval().to(device).half()
+    cfg = model.visual.preprocess_cfg
+    mean = torch.tensor(cfg["mean"], device=device).view(1, 3, 1, 1)
+    std = torch.tensor(cfg["std"], device=device).view(1, 3, 1, 1)
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        return model.encode_image(((x.clamp(0, 1) - mean) / std).half()).float()
+
+    return run
+
+
+def _clip_b32_mid_gpu(device: str, block: int = 8) -> GpuEncoder:
+    """CLIP B-32 (laion2b_s34b_b79k) residual-stream CLS token after ``block`` of its 12 transformer blocks (768-d)."""
+    import open_clip
+
+    model = open_clip.create_model_and_transforms("ViT-B-32", pretrained="laion2b_s34b_b79k")[0].eval().to(device)
+    mean = torch.tensor(open_clip.OPENAI_DATASET_MEAN, device=device).view(1, 3, 1, 1)
+    std = torch.tensor(open_clip.OPENAI_DATASET_STD, device=device).view(1, 3, 1, 1)
+    grabbed: dict[str, torch.Tensor] = {}
+    model.visual.transformer.resblocks[block - 1].register_forward_hook(lambda m, i, o: grabbed.__setitem__("x", o))
+
+    @torch.no_grad()
+    def run(x: torch.Tensor) -> torch.Tensor:
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode="bicubic", antialias=True, align_corners=False)
+        model.encode_image((x.clamp(0, 1) - mean) / std)
+        h = grabbed["x"]
+        return (h[:, 0] if model.visual.transformer.batch_first else h[0]).float()
+
+    return run
+
+
+GPU_ENCODERS: dict[str, Callable[[str], GpuEncoder]] = {"clip_b32": _clip_b32_gpu, "dinov2_b": _dinov2_b_gpu,
+                                                       "clip_l14": _clip_l14_gpu, "clip_b32_mid8": _clip_b32_mid_gpu}
 
 
 def split_dinov2(n_frames: int, feature_dir: Path = DEFAULT_FEATURE_DIR, name: str = "dinov2_b") -> list[Path]:
@@ -221,6 +263,39 @@ def extract_all_frames(
     out = all_frames_path(name, feature_dir)
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out, ids=ALL_IDS, n_video_frames=counts, frames=out_frames)
+    return out
+
+
+class _VideoSubset(_VideoFrames):
+    """Only the ``n_frames`` frames :func:`read_frames` would pick, uint8 ``(n, H, W, 3)``."""
+
+    def __init__(self, ids: np.ndarray, root: Path, n_frames: int) -> None:
+        super().__init__(ids, root)
+        self.n_frames = n_frames
+
+    def __getitem__(self, i: int) -> np.ndarray:
+        frames = super().__getitem__(i)
+        return frames[((np.arange(self.n_frames) + 0.5) * len(frames) / self.n_frames).astype(int)]
+
+
+def extract_frame_subset(
+    name: str,
+    n_frames: int,
+    root: Path = DEFAULT_ROOT,
+    feature_dir: Path = DEFAULT_FEATURE_DIR,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    num_workers: int = 3,
+) -> Path:
+    """GPU-embed only the ``n_frames`` frames of each video (``read_frames`` indices) and write ``<name>_all_f<n>.npz``
+    directly (the same file :func:`derive_frame_subset` would give, without embedding every frame)."""
+    encode = GPU_ENCODERS[name](device)
+    loader = torch.utils.data.DataLoader(_VideoSubset(ALL_IDS, root, n_frames), batch_size=None, num_workers=num_workers)
+    per_video = []
+    for frames in tqdm(loader, desc=f"{name} f{n_frames}"):
+        per_video.append(encode(frames.to(device).permute(0, 3, 1, 2).float() / 255.0).cpu().numpy())
+    picked = np.stack(per_video).astype(np.float16)
+    out = feature_path(f"{name}_all", n_frames, feature_dir)
+    np.savez(out, ids=ALL_IDS, mean=np.stack(per_video).mean(axis=1).astype(np.float32), frames=picked)
     return out
 
 
