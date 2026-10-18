@@ -11,7 +11,7 @@ KFold seed 0, all 6 subjects). Dev only confirms, with a paired Wilcoxon on per-
 | Model | top-1 | top-5 | Status |
 |---|---|---|---|
 | **M17**: CV-weighted ensemble of whitened decoders on CLIP B-32 + DINOv2-B patch + V-JEPA 2-L (16 f) + contrastive two-tower head | **20.8%** | **48.0%** | Best without CSLS. Per subject top-1 23.5 / 20.6 / 15.7 / 23.5. sub-05/06 files in `../Krabiki-matching/submissions/ens_vj_b_cv/` (local, gitignored). |
-| M17 + CSLS (k=5, per member, CV-chosen) | **24.5%** | **56.6%** | **Pending the organizers' OK**: CSLS is label-free but transductive (uses all 102 test rows jointly). Must stay off by default until approved. |
+| M17 + CSLS (k=5, per member, CV-chosen) | **24.5%** | **56.6%** | **Main candidate. CSLS was allowed by the organizers (2026-10-18).** It's label-free but transductive (uses all 102 test rows jointly). The final selection is being redone with exhaustive weights (krabiki-51). |
 | M8a: single whitened CLIP decoder | 14.7% | 42.2% | Simplest strong model. Committed submission: `submissions/decw_clip_b32_f8_t1.5s_w5-60/`. |
 
 Note (krabiki-51): M17's 4-member weights came from a greedy search that stopped in a local optimum. The exhaustive search
@@ -30,7 +30,7 @@ prefers 0.0 / 0.4 / 0.3 / 0.3 (CV +0.0006). `ensemble.py` now searches exhaustiv
 | M11 | + DINOv2-B patch decoder (0.5 / 0.5) | 15.2 | 45.3 | a second, different feature space |
 | M13 | + contrastive two-tower head | 17.4 | 46.8 | InfoNCE head is weak alone but complementary |
 | M17 | + V-JEPA 2 decoder | 20.8 | 48.0 | video model; the most different view (RSA 0.48–0.50 vs CLIP / DINOv2) |
-| M17 + CSLS | hubness correction | 24.5 | 56.6 | pending the rules question |
+| M17 + CSLS | hubness correction | 24.5 | 56.6 | allowed by the organizers |
 
 Pipeline: EEG 50–600 ms (17 ch × 55 samples at 100 Hz, 1.5 s crop, FIR decimation) → per-timepoint noise whitening →
 standardize → ridge (alpha by retrieval CV) → predicted feature vector → cosine vs 102 candidates → row-z → CV-weighted
@@ -48,9 +48,11 @@ sum over members → (CSLS) → ranking.
   on its own mean (rule 5) is a small, consistent gain (M18). CSLS gains are large partly because of this.
 - **CSLS on decoders** is a large label-free gain (M18, krabiki-cc; verified by e1): decw CLIP 14.7 / 42.2 → 17.4 / 48.5;
   M17 → 24.5 / 56.6 with CV-chosen settings. It was not significant on the old encoder.
-- **Stage 3 (paused, krabiki-2f)**: EEGNet is weak alone (CV 0.293 vs ridge 0.232), but as a 0.25 member next to M8a it
-  improves CV on 6 of 6 subjects (0.2240). Its gap to ridge shrinks with more data. Dev confirmation pending (see the end
-  of this file).
+- **Stage 3 (M14, krabiki-2f)**: EEGNet is weak alone (CV 0.293 vs ridge 0.232), but as a 0.25 member next to M8a it
+  improves CV on 6 of 6 subjects (0.2240). Its gap to ridge shrinks with more data (~8× data needed to close it).
+  Dev: alone 10.0 / 30.2; as a 0.25 member with M8a 15.5 / 45.2; inside M17 (CV weights) 18.1 / 50.2 vs 20.8 / 48.0, a
+  top-1 vs top-5 trade. **Parked, not dropped:** it's a candidate member in the final selection (`s3:` in ensemble.py),
+  adopted only if it gains on both metrics. It's data-limited, so revisit it if subject pooling is unpaused.
 
 ## 4. Tried and closed (negative or null)
 Frame count / onset pooling (M6: CLIP frames within a clip are near-identical); PCA threshold (M2 sweep); per-channel z-score
@@ -70,8 +72,8 @@ weight 0 next to M17).
   (e.g. TRIBE v2). The user is informing the organizers.
 - **External data survey** (`DATA_SURVEY.md`): THINGS-EEG2 tested (M15, no-go). Video-EEG candidates: only SEED-DV
   fits (gated application, weak signal); CineBrain is a poor fit. Recommendation: no further external EEG for now.
-- **Open questions for the organizers**: is CSLS (transductive, label-free) allowed? Are gated datasets "public"?
-  One-to-one assignment is not used.
+- **Organizers' answers**: CSLS (transductive, label-free hub correction) is **allowed** (2026-10-18). Still open: are
+  gated datasets "public"? One-to-one assignment is not used.
 - **User decisions**: subject pooling paused; audio deferred; captioning models held.
 
 ## 6. Where the code is
@@ -95,8 +97,8 @@ separate track, left untouched. The two WIP commits are local.
    ensemble.py.
 3. Ensemble robustness: regularized stacking and rank fusion vs grid weights (one-time check).
 4. **Consolidation** (G1–G4 in IMPLEMENTATION_AUDIT.md): merge all branches into one; one command that reproduces the
-   final submission from saved per-subject weights (minutes) with a documented full retrain; README; tests. Decide CSLS
-   on / off from the organizers' answer.
+   final submission from saved per-subject weights (minutes) with a documented full retrain; README; tests. CSLS is on in
+   the final pipeline (allowed); keep a no-CSLS backup set.
 
 ## 8. Method notes
 
@@ -146,7 +148,7 @@ For a new **feature model** (image / video / audio encoder):
    the exhaustive simplex search (N ≤ 5) on train-CV; the strategy (best single / equal / global / per-subject) comes from
    leave-one-fold-out. **Adopt only if** LOFO improves and the paired dev Wilcoxon agrees in direction. If CV and dev
    disagree, trust the conservative side (M8b).
-6. **Post-processing:** test-set centering (rule 5, small gain) and CSLS (only if the organizers approve).
+6. **Post-processing:** test-set centering (rule 5, small gain) and CSLS (allowed by the organizers; large gain on decoders).
 7. **Reproducibility:** pin the dependency in requirements.txt (dry-run pip, never touch torch / numpy / scipy /
    sklearn), save per-subject weights, record the model in MODEL_BACKLOG.md.
 
