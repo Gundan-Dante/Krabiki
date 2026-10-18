@@ -2,11 +2,16 @@
 
 S = sum_i w_i * z(sim_i), z = per-row z-score over the candidates, w_i >= 0, sum w_i = 1 (step 0.1).
 
-Members are given as ``--member HEAD:FEATURES[:FRAMES]`` with HEAD in
+Members are given as ``--member HEAD:FEATURES[:FRAMES]`` (``con:FEATURES:CONFIG[:FRAMES]`` for contrastive) with HEAD in
     dec         raw decoder: EEG window -> standardized features, cosine
     decw        decoder with noise-whitened EEG input (``eegmr.decoding.DecodingVariant``)
     enc         encoder, plain correlation matching
     enc_noise   encoder, per-timepoint noise whitening + negative squared distance (``eegmr.matching``)
+    con         linear InfoNCE head on the whitened-decoder input (``eegmr.contrastive``); CONFIG is one of
+                ``warm | linear | two_tower_d256`` (the ``selected`` grid of scripts/train_contrastive.py). The member's
+                similarity is the mean of row-z similarities over ``--con-seeds`` SGD seeds (0, 1, ...), in the CV folds
+                and in the final fit. Whiteners are the decw member's (re-estimated on each fold's training part) and the
+                ridge alpha is the decoder alpha chosen for these features.
 and FEATURES the name of a cache in ``features/`` (``<name>_f<FRAMES>.npz``, default FRAMES = ``--frames``).
 
 1. Training-only CV (5 folds, seed 0): out-of-fold similarity matrices of every member among the held-out videos.
@@ -40,8 +45,10 @@ from scipy.stats import hypergeom
 from sklearn.model_selection import KFold
 
 from compare_matching import compare_table  # scripts/ is on sys.path when run as a script
+from eegmr import gpu
+from eegmr.contrastive import ContrastiveConfig, prepare, train_head
 from eegmr.data import DEFAULT_ROOT, TEST_IDS, load_test, load_test_labels, load_train
-from eegmr.decoding import DecodingVariant, nested_cv_scores
+from eegmr.decoding import DecodingVariant, nested_cv_scores, noise_whiteners
 from eegmr.evaluate import evaluate
 from eegmr.features import DEFAULT_FEATURE_DIR, load_features
 from eegmr.linear import DEFAULT_ALPHAS, DecodingModel, EncodingModel
@@ -49,7 +56,7 @@ from eegmr.matching import Matcher, nested_fold_similarities, oof_predictions
 from eegmr.submission import score_submission_file, write_submission
 from predict import RESULT_FIELDS, preprocess
 
-HEADS = ("dec", "decw", "enc", "enc_noise")
+HEADS = ("dec", "decw", "enc", "enc_noise", "con")
 N_CANDIDATES = 102  # test set size: 1 target + 101 distractors
 STEPS = 10  # weights are multiples of 1 / STEPS
 TIE = 5e-4  # a simpler strategy within this much of the best leave-one-fold-out score is preferred
@@ -61,16 +68,20 @@ class Member:
     head: str
     features: str
     frames: int
+    config: str = ""  # con only
 
     @property
     def name(self) -> str:
-        return f"{self.head}:{self.features}"
+        return f"{self.head}:{self.features}" + (f":{self.config}" if self.config else "")
 
 
 def parse_member(spec: str, default_frames: int) -> Member:
     head, features, *rest = spec.split(":")
     assert head in HEADS, f"unknown head {head!r}, expected one of {HEADS}"
-    return Member(head, features, int(rest[0]) if rest else default_frames)
+    config = rest.pop(0) if head == "con" else ""
+    if head == "con":
+        assert config in contrastive_configs(), f"unknown contrastive config {config!r}, expected {list(contrastive_configs())}"
+    return Member(head, features, int(rest[0]) if rest else default_frames, config)
 
 
 def row_z(sim: np.ndarray) -> np.ndarray:
@@ -105,6 +116,26 @@ def decoder_alpha(features: np.ndarray, eeg: np.ndarray, enc_alpha: float, windo
     return float(DEFAULT_ALPHAS[curve.argmin()])
 
 
+def contrastive_configs() -> dict[str, ContrastiveConfig]:
+    """The CV-best config per variant on CLIP B-32 (M12), by short name."""
+    from train_contrastive import grid  # scripts/ is on sys.path when run as a script
+    warm, linear, two_tower = grid("selected")
+    return {"warm": warm, "linear": linear, "two_tower_d256": two_tower}
+
+
+def contrastive_similarity(cfg: ContrastiveConfig, dec_alpha: float, enc_alpha: float, F_trn: np.ndarray,
+                           eeg_trn: np.ndarray, F_new: np.ndarray, eeg_new: np.ndarray, window: slice,
+                           seeds: int) -> np.ndarray:
+    """Mean over seeds of the row-z similarity ``(n_eeg_new, n_videos_new)`` of a head trained on the training part."""
+    dev = gpu.default_device()
+    W = noise_whiteners(F_trn, eeg_trn, enc_alpha, window, device=dev)
+    X_trn, X_new, V_trn, V_new = prepare(eeg_trn, eeg_new, F_trn, F_new, W, window, dev)
+    z = 0
+    for seed in range(seeds):
+        z = z + row_z(train_head(X_trn, V_trn, cfg, dec_alpha, seed).similarity(X_new, V_new).double().cpu().numpy())
+    return z / seeds
+
+
 def encoder_matcher(head: str, window: slice) -> Matcher:
     return Matcher(window=window, **(dict(kind="noise", noise_cov="per_time", noise_similarity="euclid")
                                      if head == "enc_noise" else {}))
@@ -113,29 +144,36 @@ def encoder_matcher(head: str, window: slice) -> Matcher:
 def member_alphas(m: Member, features: np.ndarray, eeg: np.ndarray, window: slice) -> tuple[float | None, float | None]:
     """``(decoder alpha, encoder alpha)`` for this member (None where unused), chosen on the full training set."""
     enc = encoder_alpha(features, eeg, window) if m.head != "dec" else None
-    dec = decoder_alpha(features, eeg, enc, window, m.head) if m.head in ("dec", "decw") else None
+    dec = decoder_alpha(features, eeg, enc, window, m.head) if m.head in ("dec", "decw", "con") else None
     return dec, enc
 
 
 def member_fold_similarities(m: Member, alphas: tuple, features: np.ndarray, eeg: np.ndarray, window: slice,
-                             folds: list[tuple[np.ndarray, np.ndarray]]) -> list[np.ndarray]:
+                             folds: list[tuple[np.ndarray, np.ndarray]], con_seeds: int = 3) -> list[np.ndarray]:
     """Held-out similarity (val x val) per outer fold; everything estimated from the fold's training part only."""
     dec_alpha, enc_alpha = alphas
     if m.head in ("enc", "enc_noise"):
         sims = nested_fold_similarities(features, eeg, enc_alpha, encoder_matcher(m.head, window))
         return [sim for _, sim in sims]
+    if m.head == "con":
+        cfg = contrastive_configs()[m.config]
+        return [contrastive_similarity(cfg, dec_alpha, enc_alpha, features[trn], eeg[trn], features[val], eeg[val],
+                                       window, con_seeds) for trn, val in folds]
     dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
     return [dec.fit(features[trn], eeg[trn]).similarity(eeg[val], features[val]) for trn, val in folds]
 
 
 def member_test_similarity(m: Member, alphas: tuple, F_trn: np.ndarray, F_tst: np.ndarray, eeg: np.ndarray,
-                           measured: np.ndarray, window: slice) -> np.ndarray:
+                           measured: np.ndarray, window: slice, con_seeds: int = 3) -> np.ndarray:
     dec_alpha, enc_alpha = alphas
     if m.head in ("enc", "enc_noise"):
         model = EncodingModel(alpha_selection="retrieval", window=window).fit(F_trn, eeg)
         matcher = encoder_matcher(m.head, window)
         oof = oof_predictions(F_trn, eeg, model.alpha) if matcher.kind != "corr" else None
         return matcher.fit(eeg, oof).similarity(measured, model.predict(F_tst))
+    if m.head == "con":
+        return contrastive_similarity(contrastive_configs()[m.config], dec_alpha, enc_alpha, F_trn, eeg, F_tst, measured,
+                                      window, con_seeds)
     dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
     return dec.fit(F_trn, eeg).similarity(measured, F_tst)
 
@@ -201,6 +239,7 @@ def fmt(w: Weights) -> str:
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--con-seeds", type=int, default=3, help="contrastive members: average row-z similarities over this many seeds")
     p.add_argument("--member", action="append", required=True, metavar="HEAD:FEATURES[:FRAMES]",
                    help=f"ensemble member, repeatable; HEAD in {HEADS}")
     p.add_argument("--frames", type=int, default=8, help="default frames of the feature caches")
@@ -234,7 +273,8 @@ def main() -> None:
         for i, m in enumerate(members):
             feats = load_features(m.features, m.frames, ids, args.feature_dir)
             alphas[s, i] = member_alphas(m, feats, eeg, window)
-            per_member.append(member_fold_similarities(m, alphas[s, i], feats, eeg, window, folds))
+            per_member.append(member_fold_similarities(m, alphas[s, i], feats, eeg, window, folds,
+                                                          args.con_seeds))
         z_sims[s] = [[row_z(per_member[i][f]) for i in range(n)] for f in range(5)]
         print(f"sub-{s:02d} alphas (dec, enc):", {m.name: alphas[s, i] for i, m in enumerate(members)}, flush=True)
     ev = Evaluator(z_sims)
@@ -268,7 +308,7 @@ def main() -> None:
     loo = {k: float(np.mean(v)) for k, v in loo.items()}
     singles_cv = {names[i]: float(np.mean([avg_criterion(ev.criteria(s, all_folds, w)) for s in subjects]))
                   for i, w in enumerate(single_vecs)}
-    print("\nleave-one-fold-out mean of (E[top1] + E[top5]) / 2:", {k: round(v, 4) for k, v in loo.items()})
+    print("\nleave-one-fold-out mean of (E[top1] + E[top5]) / 2:", {k: round(v, 5) for k, v in loo.items()})
     print("single members, same criterion on all folds:", {k: round(v, 4) for k, v in singles_cv.items()})
     strategy = {"single": "best single", "subject": "per-subject"}.get(args.select, args.select)
     if strategy == "auto":
@@ -305,7 +345,7 @@ def main() -> None:
         measured = preprocess(load_test(s, args.root), args.max_seconds)
         test_sims = [member_test_similarity(m, alphas[s, i], load_features(m.features, m.frames, ids, args.feature_dir),
                                             load_features(m.features, m.frames, TEST_IDS, args.feature_dir), eeg,
-                                            measured, window) for i, m in enumerate(members)]
+                                            measured, window, args.con_seeds) for i, m in enumerate(members)]
         true_ids = load_test_labels(s, args.root)
         for name, ws in variants.items():
             sim = blend(test_sims, ws[s])

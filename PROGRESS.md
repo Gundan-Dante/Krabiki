@@ -258,6 +258,43 @@ top-1 agrees with the CLIP decw submission on 65% / 57% of rows). Local only (gi
 Reproduce: `PYTHONPATH=src python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --max-seconds 1.5 --experiment ens_clip_patch`
 (CV tables in `results/ens_clip_patch_cv.csv`, `results/ens_clip_patch_enc_cv.csv`, `results/ens_4way_cv.csv`).
 
+## Contrastive members in the ensemble (track-matching)
+`scripts/ensemble.py` gains a member type `con:FEATURES:CONFIG` (CONFIG in `warm | linear | two_tower_d256`, the `selected` grid of `scripts/train_contrastive.py`; M12 heads in
+`eegmr.contrastive`). A `con` member uses the decw member's per-fold noise whiteners (re-estimated on each outer fold's training part), `prepare` + `train_head` with the decoder
+alpha chosen for those features, and its similarity is the **mean of row-z similarities over 3 SGD seeds (0, 1, 2)**, in the CV folds and in the final fit. Seed-0 single-run CV
+reproduces M12 exactly (sub-01 two_tower_d256: 0.2200 / 0.0846 / 0.2783). Selection rule unchanged: weights on the 0.1 simplex by (E[top-1] + E[top-5]) / 2, strategy by
+leave-one-fold-out (simplest within 0.0005 of the best).
+
+Members, CV (E1+E5)/2 over 6 subjects (3-seed averages for `con`), and dev top-1 / top-5 / median:
+
+| Member | CV | dev |
+|---|---|---|
+| decw:clip_b32 | 0.1550 | 14.7 / 42.2 / 7.5 |
+| decw:dinov2_b_patch_all | 0.1609 | 13.0 / 41.7 / 7.5 |
+| con:clip_b32:two_tower_d256 | 0.1477 | 16.7 / 45.8 / 7.0 |
+| con:dinov2_b_patch_all:linear | 0.1628 | 15.2 / 45.1 / 7.1 |
+
+Ensembles (CV-chosen global weights; LOFO = leave-one-fold-out of (E1+E5)/2):
+
+| Run | Members (order as listed) | CV-chosen weights | LOFO: best single / equal / global / per-subject | strategy | dev top-1 / top-5 / median | vs decw clip alone (better/worse, p) | vs M11 (better/worse, p) |
+|---|---|---|---|---|---|---|---|
+| M11 reference | decw clip + decw patch | 0.5 / 0.5 | 0.161 / 0.172 / 0.172 / 0.171 | equal | 15.2 / 45.3 / 7.2 | 179 / 140, 0.0024 | – |
+| a | decw clip + con clip two-tower | 0.5 / 0.5 | 0.1550 / 0.1635 / 0.1632 / 0.1623 | equal | 17.9 / 46.3 / 7.0 | 197 / 121, 5e-6 | 185 / 140, 0.049 |
+| **b** | decw clip + decw patch + con clip two-tower | **0.1 / 0.6 / 0.3** | 0.1609 / 0.1750 / **0.1807** / 0.1781 | global | **17.4 / 46.8 / 6.0** | 219 / 95, 1e-12 | 185 / 103, 9e-7 |
+| c | b + con patch linear | 0.1 / 0.4 / 0.3 / 0.2 | 0.1628 / 0.1797 / 0.1812 / 0.1807 | global | 18.6 / 47.8 / 6.1 | 211 / 125, 2e-6 | 194 / 105, 2e-6 |
+
+Run b per subject, dev top-1 / top-5 / median (CV-chosen global weights): sub-01 17.6 / 52.9 / 4.0, sub-02 18.6 / 45.1 / 6.0, sub-03 13.7 / 43.1 / 8.0, sub-04 19.6 / 46.1 / 6.0.
+Per-subject weights give no gain by LOFO (b: 0.1781 vs 0.1807 global; c: 0.1807 vs 0.1812).
+
+**Reading.** The contrastive members add to the decoders: LOFO rises from 0.172 (M11) to 0.181 (b), and the improvement is already there in run a (decw clip alone 0.155 → 0.1635).
+b and c are a tie on CV (0.1807 vs 0.1812); applying the same "simplest within 0.0005" rule across runs, **b is the CV-best combo** (3 members, 0.1 / 0.6 / 0.3). Run c's
+4-member blend is higher on dev (18.6 / 47.8) but that is not what selects it. Note the weights: DINOv2-patch gets most of the mass, the CLIP decoder only 0.1, and the
+two-tower head 0.3. A single con head (3-seed) beats its decw counterpart on dev (CLIP 16.7 vs 14.7 top-1) but loses on CV (0.1477 vs 0.1550); the CV is the better guide (dev ±1.1 pts).
+Submissions (format validated: 102 × 102 int64, rows permutations of the test IDs; local, gitignored): `submissions/ens_con_b_cv/` (CV-best), also written `ens_con_c_cv/` and
+`ens_con_a_cv/`. Top-1 agreement with the M11 blend on sub-05 / 06: b 70% / 77%, c 67% / 74%, a 52% / 47%.
+Reproduce b: `PYTHONPATH=src python scripts/ensemble.py --member decw:clip_b32 --member decw:dinov2_b_patch_all --member con:clip_b32:two_tower_d256 --max-seconds 1.5 --experiment ens_con_b`
+(CV tables `results/ens_con_{a,b,c}_cv.csv`).
+
 ## Next
 - Re-test on the unwhitened pipeline: z-scoring (still expected to be a no-op), finer alpha grid around 1e4,
   PCA variance threshold or no PCA (kernel ridge), and the per-subject CV quality estimates.
