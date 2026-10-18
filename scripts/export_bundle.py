@@ -75,7 +75,7 @@ def main() -> None:
 
     members = [ens.parse_member(spec, a.frames) for spec in a.member]
     for m in members:
-        assert m.head in ("decw", "dec", "con"), f"export supports decw / dec / con members, not {m.head!r}"
+        assert m.head in ("decw", "dec", "con", "pdecw"), f"export supports decw / dec / con / pdecw members, not {m.head!r}"
     seeds = list(range(a.con_seed_start, a.con_seed_start + a.con_seeds))
     if a.subject_weights:
         weights = {int(k): [float(x) for x in v] for k, v in json.loads(a.subject_weights.read_text()).items()}
@@ -94,6 +94,7 @@ def main() -> None:
         np.save(a.out / "candidates" / f"{bundle_name(m)}.npy",
                 load_features(m.features, m.frames, TEST_IDS, feature_dir).astype(np.float32))
     report = {}
+    pooled = PooledExport(ens, a, cache_args, members, root, feature_dir) if any(m.head == "pdecw" for m in members) else None
     for s in a.subjects:
         X, ids = load_train(s, root)
         eeg = ens.preprocess(X, a.max_seconds)
@@ -117,7 +118,11 @@ def main() -> None:
             out[f"{n}/f_mean"], out[f"{n}/f_std"] = f_mean.astype(np.float32), np.where(f_std == 0, 1.0, f_std).astype(np.float32)
             out[f"{n}/dec_alpha"] = np.float64(dec_alpha)
             out[f"{n}/enc_alpha"] = np.float64(np.nan if enc_alpha is None else enc_alpha)
-            if m.head in ("decw", "dec"):
+            if m.head == "pdecw":
+                W, live, params, (dec_alpha, enc_alpha, lam) = pooled.export(s, m, measured, F_tst)
+                out |= {f"{n}/{k}": v for k, v in params.items()}
+                out[f"{n}/dec_alpha"], out[f"{n}/enc_alpha"], out[f"{n}/lam"] = np.float64(dec_alpha), np.float64(enc_alpha), np.float64(lam)
+            elif m.head in ("decw", "dec"):
                 dec = DecodingVariant(dec_alpha, whiten_input=m.head == "decw", enc_alpha=enc_alpha, window=window)
                 dec.fit(F_trn, eeg)
                 live = dec.similarity(measured, F_tst)
@@ -161,6 +166,70 @@ def main() -> None:
     worst = max((v["live_vs_cached_max_abs"] or 0.0) for v in report.values())
     missing = sum(v["live_vs_cached_max_abs"] is None for v in report.values())
     print(f"export checks: max |live - cached| = {worst:.3g} over {len(report) - missing} member fits ({missing} without cache)")
+
+
+class PooledExport:
+    """``pdecw`` members (scripts/pool_member.py): the subject-pooled whitened decoder of a target subject is still one
+    linear map. At the cached (lam, alpha), the weighted ridge on [target rows (w=1); other subjects' rows (w=lam)] gives
+    ``pred = X_std @ B + b`` with ``B = V diag(S / (S^2 + alpha)) U^T (Y - y_w)`` and ``b = y_w - x_w @ B``; ``X_std`` is
+    the TARGET subject's whitened window standardized with its own training statistics (other subjects contribute only
+    through B). So inference is identical to decw: export B, b (as y_mean), the target's whiteners and x_mean / x_std."""
+
+    def __init__(self, ens, a, cache_args, members, root, feature_dir):
+        import pool_member as pm  # the audited checkout's scripts/pool_member.py
+        from eegmr.data import load_train
+        from eegmr.decoding import decoder_input, noise_whiteners
+        from eegmr.features import load_features
+
+        self.ens, self.pm, self.args, self.root, self.fdir = ens, pm, cache_args, root, feature_dir
+        self.decoder_input, self.noise_whiteners, self.load_features = decoder_input, noise_whiteners, load_features
+        self.data = {}
+        for s in range(1, 7):
+            X, ids = load_train(s, root)
+            self.data[s] = dict(ids=ids, eeg=ens.preprocess(X, a.max_seconds))
+        self.per_feature: dict[tuple[str, int], dict] = {}
+
+    def _subjects(self, m) -> dict:
+        """Per subject: features, decw alphas, full-training whiteners and standardized whitened window."""
+        k = (m.features, m.frames)
+        if k not in self.per_feature:
+            pm, out = self.pm, {}
+            for s, d in self.data.items():
+                F = self.load_features(m.features, m.frames, d["ids"], self.fdir)
+                decw = self.ens.Member("decw", m.features, m.frames)
+                with np.load(self.ens.cache_path(self.args, s, decw, "cv")) as z:
+                    dec_alpha, enc_alpha = (float(x) for x in z["alphas"])
+                Wh = self.noise_whiteners(F, d["eeg"], enc_alpha, slice(*self.args.window), device=pm.DEV)
+                Xs = self.decoder_input(d["eeg"], slice(*self.args.window), Wh, pm.DEV)
+                mu, sd = pm.std_stats(Xs)
+                out[s] = dict(F=F, Ft=pm.t64(F), Wh=Wh, mu=mu, sd=sd, X=(Xs - mu) / sd, enc_alpha=enc_alpha)
+            self.per_feature[k] = out
+        return self.per_feature[k]
+
+    def export(self, t: int, m, measured: np.ndarray, F_tst: np.ndarray):
+        import torch
+
+        pm, subj = self.pm, self._subjects(m)
+        with np.load(self.ens.cache_path(self.args, t, m, "cv")) as z:
+            alpha, enc_alpha = (float(x) for x in z["alphas"])
+            lam = float(z["lam"])
+        st = subj[t]
+        fm, fs = pm.std_stats(st["Ft"])
+        others = [o for o in subj if o != t] if lam > 0 else []
+        Xc = torch.cat([st["X"]] + [subj[o]["X"] for o in others])
+        Yc = torch.cat([(st["Ft"] - fm) / fs] + [(subj[o]["Ft"] - fm) / fs for o in others])
+        w = torch.ones(len(Xc), dtype=torch.float64, device=pm.DEV)
+        w[len(st["X"]):] = lam
+        xm, ym = (w[:, None] * Xc).sum(0) / w.sum(), (w[:, None] * Yc).sum(0) / w.sum()
+        sw = w.sqrt()[:, None]
+        U, S, Vh = torch.linalg.svd((Xc - xm) * sw, full_matrices=False)
+        B = (Vh.T * (S / (S**2 + alpha))) @ (U.T @ ((Yc - ym) * sw))
+        b = ym - xm @ B
+        Xn = (self.decoder_input(measured, slice(*self.args.window), st["Wh"], pm.DEV) - st["mu"]) / st["sd"]
+        live = pm.cosine(Xn @ B + b, (pm.t64(F_tst) - fm) / fs).cpu().numpy().astype(np.float64)
+        params = {"x_mean": st["mu"].cpu().numpy().astype(np.float32), "x_std": st["sd"].cpu().numpy().astype(np.float32),
+                  "B": B.cpu().numpy().astype(np.float32), "y_mean": b.cpu().numpy().astype(np.float32)}
+        return st["Wh"], live, params, (alpha, enc_alpha, lam)
 
 
 if __name__ == "__main__":

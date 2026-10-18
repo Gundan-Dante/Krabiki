@@ -67,7 +67,7 @@ def member_similarity(eeg: np.ndarray, w: dict, member: dict, candidates: np.nda
     name = member["name"]
     X = member_input(eeg, w, name, window)
     cand = (candidates.astype(np.float64) - w[f"{name}/f_mean"]) / w[f"{name}/f_std"]
-    if member["head"] in ("decw", "dec"):
+    if member["head"] in ("decw", "dec", "pdecw"):  # pdecw = subject-pooled decoder, also one linear map
         pred = X @ w[f"{name}/B"].astype(np.float64) + w[f"{name}/y_mean"]
         return normalize(pred) @ normalize(cand).T
     z = 0.0
