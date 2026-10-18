@@ -541,3 +541,24 @@ decimation to 100 Hz. Window 5:60 = 50–600 ms. Evaluation and submission write
   --member decw:clip_b32 --member decw:dinov2_b_patch_all --member decw:vjepa2_l_all:16 --member con:clip_b32:two_tower_d256
   --member decw:clip_b32_mid8_all:8 --member decw:alexnet_p6:8 --member decw:clap_all:1 --member decw:lowav_all:1
   --max-seconds 1.5 --center-test --csls 5 --csls-stage member --experiment merged_all_ctr_csls5`.
+
+## M23: Motion gate (Azamat, origin/main d9f694f), tested by krabiki-2f: not adopted
+- **What:** per candidate video, image members' row-z scores × exp(−β·m) and video members' × exp(+β·m), with m = the z-scored log
+  motion of the video (frame differences at 64×64, video files only), optional final column-z; β chosen by training CV.
+- **Test:** on the headline final_csls (fin5_ctr_m5), gate applied on top of the CV member weights and after per-member CSLS,
+  using krabiki-51's cached fold / test matrices. β=0 with col-z off reproduces the headline exactly.
+- **Result:** train-CV is best at β=0, getting monotonically worse in both directions ((E1+E5)/2: −0.5 0.177, −0.25 0.202, 0 0.212,
+  +0.25 0.199, +0.5 0.165). β=0 is picked on 6/6 subjects (pct rank) and 5/6 ((E1+E5)/2). Column-z alone is worse by CV (0.2099 vs
+  0.2123); its dev diagnostic is n.s. (24.8 / 58.6, p = 0.26). **Not adopted.** The CV member weights and the low-level members
+  already capture the image / video / motion balance.
+- **Premise check (krabiki-2f, 5,650 held-out training-CV trials, 6 subjects, terciles of the true video's motion):** every
+  member and the blend decode **moving videos worse** (blend pct rank 0.179 static / 0.178 medium / 0.201 moving). V-JEPA's
+  advantage over the image members is **largest on static** videos (−0.026) and shrinks with motion (−0.008). Moving − static =
+  +0.018, 95% CI [+0.006, +0.031], only 1/6 subjects with the predicted sign. The premise ("video models win on moving
+  videos") is contradicted in our data, so the idea is doomed here, not just the gate design. Likely reason: the 50–600 ms
+  EEG window reflects the clip's opening scene, while features pooled over 3 s blur more for moving clips.
+- **Corrected gate (krabiki-2f):** (A) convex per-candidate member mix (total weight per candidate fixed, no column-z; β=0
+  reproduces the headline exactly), (B) one sign-free contrast V-JEPA vs image members, (C) onset motion (0–0.6 s; Spearman
+  0.885 with whole-clip motion). Train-CV (E1+E5)/2 peaks at β=0 for both motion measures (0.21234). The best direction
+  (V-JEPA on static clips, β=−0.25) gains ≤ 0.0001 pct rank. Per-subject best β has both signs, so the ≥5/6 same-sign rule
+  fails. **Not adopted:** the CV member mix is already near-optimal per candidate, and motion carries no exploitable gating signal.
