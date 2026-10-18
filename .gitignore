@@ -48,3 +48,5 @@ results/zero_cost/
 !submissions/final_nocsls/
 !submissions/README.md
 bundle/
+!submissions/final_v3_csls/
+!submissions/final_v3_nocsls/
