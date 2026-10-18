@@ -70,7 +70,8 @@ def main() -> None:
               "## Files", "", "```", f"{a.bundle.name}/", "  BUNDLE_README.md, infer_bundle.py, bundle_meta.json",
               "  weights/sub-01.npz .. sub-06.npz   per-subject parameters (schema below)",
               "  candidates/<member>.npy            (102, D) float32 test-video features, row j = video 1001 + j",
-              "  ARCHITECTURE.md, IMPROVEMENTS.md, EEGNET.md, schematics/   documentation and figures", "```", "",
+              "  ARCHITECTURE.md, IMPROVEMENTS.md, EEGNET.md, AUDIT.md, PRESENTATION.md   documentation",
+              "  schematics/   figures (fig1 progress, fig2 encoding vs decoding, fig4 ensemble anatomy, fig5 expected score, fig7 recall@k) + FIGURES.md", "```", "",
               "**`weights/sub-01.npz`** (all subjects have the same keys):", "", "| array | shape | dtype |", "|---|---|---|"]
     for k in sorted(w.files):
         lines.append(f"| `{k}` | {w[k].shape} | {w[k].dtype} |")

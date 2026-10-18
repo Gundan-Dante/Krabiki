@@ -76,9 +76,10 @@ step_bundle() {  # SUBJECT_WEIGHTS=<json {"1": [...], ...}> overrides WEIGHTS fo
 }
 step_package() {  # docs + schematics + README, then zip (run after step_infer has verified the bundle)
   VIZ=${VIZ:-/home/kparpie/Krabiki-viz/presentation}
-  for f in ARCHITECTURE.md IMPROVEMENTS.md EEGNET.md; do [ -f $REPO/$f ] && cp $REPO/$f "$BUNDLE/"; done
-  mkdir -p "$BUNDLE/schematics" && cp $VIZ/figures/fig1_progress.png $VIZ/figures/fig2_encoding_vs_decoding.png \
-    $VIZ/figures/fig4_ensemble_anatomy.png $VIZ/FIGURES.md "$BUNDLE/schematics/"
+  for f in ${DOCS:-ARCHITECTURE.md IMPROVEMENTS.md EEGNET.md AUDIT.md PRESENTATION.md}; do [ -f $REPO/$f ] && cp $REPO/$f "$BUNDLE/"; done
+  mkdir -p "$BUNDLE/schematics" && cp $VIZ/FIGURES.md "$BUNDLE/schematics/"
+  for f in ${FIGS:-fig1_progress fig2_encoding_vs_decoding fig4_ensemble_anatomy fig5_expected_score fig7_recall_at_k}; do
+    cp $VIZ/figures/$f.png "$BUNDLE/schematics/"; done
   $PY $REPO/scripts/bundle_readme.py --bundle "$BUNDLE" --title "$FINAL_DIR" --dev "${DEV_LINE:-see bundle_meta.json}" \
     --expected-dir "submissions/$FINAL_DIR" --verified "${VERIFIED_LINE:-}"
   (cd "$(dirname "$BUNDLE")" && rm -f "$(basename "$BUNDLE").zip" && zip -qr -9 "$(basename "$BUNDLE").zip" "$(basename "$BUNDLE")")
